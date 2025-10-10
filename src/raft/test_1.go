@@ -17,18 +17,21 @@ import "sync"
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
+//const RaftElectionTimeout = 1000 * time.Millisecond
+
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
 	servers := 3
-	cfg := make_config(t, servers, false)
-	defer cfg.cleanup()
+	cfg := make_config(t, servers, false) // 创建3个节点的测试集群
+	defer cfg.cleanup()                   // 测试结束后清理资源
 
+	// 检查是否选举出唯一leader
 	cfg.begin("Test (2A): initial election")
-
 	// is a leader elected?
 	cfg.checkOneLeader()
 
+	// 等待50ms让follower同步term，再检查所有节点term是否一致
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
 	time.Sleep(50 * time.Millisecond)
@@ -38,6 +41,7 @@ func TestInitialElection2A(t *testing.T) {
 	}
 
 	// does the leader+term stay the same if there is no network failure?
+	// 等待2个选举超时，检查leader是否保持（无故障时leader不应变更）
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
@@ -45,6 +49,7 @@ func TestInitialElection2A(t *testing.T) {
 	}
 
 	// there should still be a leader.
+	// 确认仍有leader
 	cfg.checkOneLeader()
 
 	cfg.end()
@@ -57,29 +62,34 @@ func TestReElection2A(t *testing.T) {
 
 	cfg.begin("Test (2A): election after network failure")
 
-	leader1 := cfg.checkOneLeader()
+	leader1 := cfg.checkOneLeader() // 记录初始leader
 
 	// if the leader disconnects, a new one should be elected.
+	// 断开初始leader的连接，检查是否选举出新leader
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
+	// 重新连接旧leader，检查新leader是否仍稳定（旧leader不应抢占）
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
 
 	// if there's no quorum, no leader should
 	// be elected.
+	// 断开2个节点（仅剩1个节点，无多数派），检查是否无leader
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
 	// if a quorum arises, it should elect a leader.
+	// 重新连接1个节点（恢复多数派），检查是否重新选举出leader
 	cfg.connect((leader2 + 1) % servers)
 	cfg.checkOneLeader()
 
 	// re-join of last node shouldn't prevent leader from existing.
+	// 重新连接最后1个节点，检查leader是否仍存在
 	cfg.connect(leader2)
 	cfg.checkOneLeader()
 
@@ -89,17 +99,19 @@ func TestReElection2A(t *testing.T) {
 func TestBasicAgree2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
+	DPrintf("Test (2B): make_config完成")
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): basic agreement")
-
+	DPrintf("Test (2B): begin完成")
 	iters := 3
 	for index := 1; index < iters+1; index++ {
-		nd, _ := cfg.nCommitted(index)
+		DPrintf("Test (2B): 现在是第%v条日志", index)
+		nd, _ := cfg.nCommitted(index) //index代表第index条日志
 		if nd > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
-
+		DPrintf("Test (2B): 现在是第%v条日志，日志内容为%v", index, index*100)
 		xindex := cfg.one(index*100, servers, false)
 		if xindex != index {
 			t.Fatalf("got index %v but expected %v", xindex, index)
@@ -109,10 +121,8 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.end()
 }
 
-//
 // check, based on counting bytes of RPCs, that
 // each command is sent to each peer just once.
-//
 func TestRPCBytes2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
@@ -672,7 +682,6 @@ func TestPersist32C(t *testing.T) {
 	cfg.end()
 }
 
-//
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
 // iteration asks a leader, if there is one, to insert a command in the Raft
 // log.  If there is a leader, that leader will fail quickly with a high
@@ -681,7 +690,6 @@ func TestPersist32C(t *testing.T) {
 // alive servers isn't enough to form a majority, perhaps start a new server.
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
-//
 func TestFigure82C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
