@@ -43,6 +43,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.votedFor = args.CandidateId
 		}
 		reply.Term = rf.currentTerm
+		rf.persist()
 	} else if rf.currentTerm == args.Term {
 		reply.Term = rf.currentTerm
 		if rf.votedFor == args.CandidateId {
@@ -51,13 +52,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.turnToLeader = 0
 			DPrintf("主机%d转为follower-voteFor不为空时\n",rf.me)
 			rf.votedFor = args.CandidateId
+			rf.persist()
 		} else if rf.votedFor == -1 {
 			if rf.logs[rf.lastLogIndex].Term > args.LastLogTerm || (rf.logs[rf.lastLogIndex].Term == args.LastLogTerm && rf.lastLogIndex >= args.LastLogIndex) {
 				reply.VoteGranted = false
 				rf.votedFor = -1
+				rf.persist()
 			} else {
 				reply.VoteGranted = true
 				rf.votedFor = args.CandidateId
+				rf.persist()
 			}
 		} else {
 			reply.VoteGranted = false
@@ -86,6 +90,7 @@ func (rf *Raft) HandleRequestVoteReply(reply *RequestVoteReply, nums *int) {
 			DPrintf("主机%d转为follower-投票请求回复处\n",rf.me)
 			rf.ElectionTimeout = rf.randomTimeout()
 			rf.votedFor = -1
+			rf.persist()
 		} else {
 			rf.ElectionTimeout = rf.randomTimeout()
 		}
@@ -166,6 +171,7 @@ func (rf *Raft) FollowerAction() {
 				rf.state = Candidate
 				rf.currentTerm = rf.currentTerm + 1
 				rf.votedFor = rf.me
+				rf.persist()
 				rf.mu.Unlock()
 				i := 0
 				agreedCandidateNum := 1
@@ -191,8 +197,11 @@ func (rf *Raft) FollowerAction() {
 				}
 				if agreedCandidateNum*2 > len(rf.peers) && rf.state == Candidate {
 					rf.mu.Lock()
-					DPrintf("主机：%d成为leader\n", rf.me)
+					DPrintf("主机：%d成为leader,当前Term：%d\n", rf.me,rf.currentTerm)
 					rf.state = Leader
+					rf.logs = append(rf.logs, one_log{ Term: rf.currentTerm, Index: len(rf.logs), Committed: false})
+					rf.committed = append(rf.committed, false)
+					rf.persist()
 					rf.mu.Unlock()
 				}
 			}

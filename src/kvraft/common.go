@@ -16,6 +16,9 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Pos     int
+	Commiter int64
+	RealPos int
 }
 
 type PutAppendReply struct {
@@ -24,6 +27,8 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
+	Commiter int64
+	RealPos int
 	// You'll have to add definitions here.
 }
 

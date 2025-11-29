@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 	"time"
-	//"log"
 )
 
 type AppendEntriesArgs struct {
@@ -23,58 +22,39 @@ type AppendEntriesReply struct {
 	ConflictTerm  int
 }
 
-func (rf *Raft) applyLog(){
-	defer func(){
-		rf.persist()
-	}()
-	for{
-		if rf.lastApplied==rf.commitIndex{
-			time.Sleep(5 * time.Millisecond)
+func (rf *Raft) followerApplyLog(){
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	for rf.lastApplied<rf.commitIndex{
+		rf.lastApplied++
+		if rf.committed[rf.lastApplied]==true&&rf.logs[rf.lastApplied].Cmd!=nil{
 			continue
 		}
-		for rf.lastApplied<rf.commitIndex{
-			rf.mu.Lock()
-			rf.lastApplied++
-			if rf.committed[rf.lastApplied]==true&&rf.logs[rf.lastApplied].Cmd!=nil{
-				rf.mu.Unlock()
-				continue
-			}
-			if rf.logs[rf.lastApplied].Cmd==nil&&rf.lastApplied!=0{
-				rf.CurnilNum++
-				rf.logs[rf.lastApplied].Committed=true
-				rf.committed[rf.lastApplied]=true
-				rf.persist()
-				rf.mu.Unlock()
-				continue
-			}
-			newApplyMsg := new(ApplyMsg)
-			rf.logs[rf.lastApplied].Committed = true
-			rf.committed[rf.lastApplied] = true
+		if rf.logs[rf.lastApplied].Cmd==nil&&rf.lastApplied!=0{
+			rf.CurnilNum++
+			rf.logs[rf.lastApplied].Committed=true
+			rf.committed[rf.lastApplied]=true
 			rf.persist()
-			newApplyMsg.Command = rf.logs[rf.lastApplied].Cmd
-			newApplyMsg.CommandIndex = rf.lastApplied-rf.CurnilNum
-			newApplyMsg.CommandValid = true
-			//DPrintf("主机：%d中索引为%d的日志提交完成,提交内容为：%v\n", rf.me, rf.lastApplied-rf.CurnilNum, rf.logs[rf.lastApplied].Cmd)
-			rf.applyCh <- *newApplyMsg
-			DPrintf("主机：%d中索引为%d的日志提交完成,提交内容为：%v\n", rf.me, rf.lastApplied-rf.CurnilNum, rf.logs[rf.lastApplied].Cmd)
-			//DPrintf("主机：%d中索引为%d的日志over\n", rf.me, rf.lastApplied-rf.CurnilNum)
-			rf.mu.Unlock()
-	}
-
+			continue
+		}
+		newApplyMsg := new(ApplyMsg)
+		rf.logs[rf.lastApplied].Committed = true
+		rf.committed[rf.lastApplied] = true
+		rf.persist()
+		newApplyMsg.Command = rf.logs[rf.lastApplied].Cmd
+		newApplyMsg.CommandIndex = rf.lastApplied-rf.CurnilNum
+		newApplyMsg.CommandValid = true
+		rf.applyCh <- *newApplyMsg
+		DPrintf("主机：%d中索引为%d的日志提交完成", rf.me, rf.lastApplied-rf.CurnilNum)
 	}
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
 	//// 2A、2B 阶段实现：处理其他节点的投票请求
-	DPrintf("主机：%d想要获得锁\n",rf.me)
 	rf.mu.Lock()
-	defer func(){
-		rf.mu.Unlock()
-		DPrintf("主机：%d处理完心跳即将退出\n",rf.me)
-	}()
+	defer rf.mu.Unlock()
 	DPrintf("主机：%d,AppendEntries启动,当前日志为%v\n", rf.me, rf.logs)
-	//DPrintf("主机：%d,AppendEntries启动,args:%v\n", rf.me, args)
 	rf.updateTime()
 	
 	if rf.currentTerm <= args.Term {
@@ -143,6 +123,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			if args.LeaderCommit > rf.commitIndex {
 				rf.commitIndex=min(args.LeaderCommit,len(rf.logs)-1)
+				go rf.followerApplyLog()
+				// for rf.commitIndex < min(args.LeaderCommit, len(rf.logs)-1) {
+				// 	rf.commitIndex++
+				// 	newApplyMsg := new(ApplyMsg)
+				// 	rf.logs[rf.commitIndex].Committed = true
+				// 	newApplyMsg.Command = rf.logs[rf.commitIndex].Cmd
+				// 	newApplyMsg.CommandIndex = rf.commitIndex
+				// 	newApplyMsg.CommandValid = true
+				// 	rf.applyCh <- *newApplyMsg
+				// 	DPrintf("主机：%d中索引为%d的日志提交完成", rf.me, rf.commitIndex)
+				// }
 			}
 		}
 	} else {
@@ -214,7 +205,6 @@ func (rf *Raft) sendEntries(i int, wg *sync.WaitGroup) {
 	}
 	args.LeaderCommit = rf.commitIndex
 	DPrintf("主机：%d send AppendEntries RPC to %d begin,自身日志为%v\n且日志内容中PrevLogIndex: %d,PrevLogTerm: %d,LeaderCommit:%d,Entries: %v", rf.me, i,rf.logs, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
-	//DPrintf("主机：%d send AppendEntries RPC to %d begin,args: %v", rf.me, i,args)
 
 	// 2. 创建20ms超时的上下文：ctx用于控制超时，cancel用于主动取消（需defer避免泄漏）
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -251,6 +241,32 @@ func (rf *Raft) sendEntries(i int, wg *sync.WaitGroup) {
 	}
 }
 
+func (rf *Raft) applyLog(){
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	for rf.lastApplied<rf.commitIndex{
+		rf.lastApplied++
+		if rf.committed[rf.lastApplied]==true&&rf.logs[rf.lastApplied].Cmd!=nil{
+			continue
+		}
+		if rf.logs[rf.lastApplied].Cmd==nil&&rf.lastApplied!=0{
+			rf.CurnilNum++
+			rf.logs[rf.lastApplied].Committed=true
+			rf.committed[rf.lastApplied]=true
+			rf.persist()
+			continue
+		}
+		newApplymsg := new(ApplyMsg)
+		rf.logs[rf.lastApplied].Committed = true
+		rf.committed[rf.lastApplied] = true
+		rf.persist()
+		newApplymsg.Command = rf.logs[rf.lastApplied].Cmd
+		newApplymsg.CommandIndex = rf.lastApplied-rf.CurnilNum
+		newApplymsg.CommandValid = true
+		rf.applyCh <- *newApplymsg
+		DPrintf("主机：%d中索引为%d的日志提交完成,rf.lastApplied:%d,rf.CurnilNum:%d\n", rf.me, rf.lastApplied-rf.CurnilNum,rf.lastApplied,rf.CurnilNum)
+	}
+}
 
 func (rf *Raft) checkCommit() {
 	for {
@@ -275,6 +291,7 @@ func (rf *Raft) checkCommit() {
 				}
 				if numsCommit*2 > len(rf.peers) && rf.state == Leader{
 					rf.commitIndex=N;
+					go rf.applyLog()
 					break
 				}
 			}
@@ -304,7 +321,6 @@ func (rf *Raft) initLeader() {
 // 检查是否是leader，如果是leader则向其它所有server发送心跳，如果不是leader则空转或time.sleep
 func (rf *Raft) LeaderAction() {
 	var wg sync.WaitGroup
-	var lastLoopTime time.Time // 用于记录上一次循环开始的时间
 	for {
 		//如果已经被killed，返回
 		if rf.killed() {
@@ -320,13 +336,6 @@ func (rf *Raft) LeaderAction() {
 				rf.MaxnilNum=0
 				rf.initLeader()
 			}
-			currentTime := time.Now()
-			if !lastLoopTime.IsZero() {
-				interval := currentTime.Sub(lastLoopTime)
-				DPrintf("主机：%d，LeaderAction 循环间隔: %v\n", rf.me, interval)
-				//log.Printf("主机：%d，LeaderAction 循环间隔: %v\n", rf.me, interval)
-			}
-			lastLoopTime = currentTime
 			//leader需要不断查看是否有可以提交的日志
 			go rf.checkCommit()
 			i := 0

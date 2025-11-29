@@ -2,7 +2,7 @@ package raft
 
 import (
 	"bytes"
-	"log"
+	//"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -182,7 +182,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.logs = append(rf.logs, one_log{Cmd: command, Term: term, Index: index, Committed: false})
 	rf.committed = append(rf.committed, false)
 	DPrintf("主机：%d是leader,日志增加完成,日志内容为：%v\n", rf.me,rf.logs)
-	log.Printf("主机：%d是leader,日志增加完成,日志内容为：%v\n", rf.me,rf.logs)
+	//log.Printf("主机：%d是leader,日志增加完成,日志内容为：%v\n", rf.me,rf.logs)
 	rf.persist()
 	//DPrintf("主机：%d,index:%d,rf.MaxnilNum:%d\n", rf.me,index,rf.MaxnilNum)
 	return index-rf.MaxnilNum, term, isLeader
@@ -264,7 +264,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.LeaderAction()
 	DPrintf("主机：%d,LeaderAction()启动\n", rf.me)
 	go rf.FollowerAction()
-	go rf.applyLog()
 	DPrintf("主机：%d,FollowerAction()启动\n", rf.me)
 	// initialize from state persisted before a crash
 	return rf
