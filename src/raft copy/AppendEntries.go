@@ -18,8 +18,40 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term          int
 	Success       bool
-	ConflictIndex int
+	ConflictIndex int//将其定义为出现差错的index
 	ConflictTerm  int
+}
+
+func (rf *Raft) applyLog(){
+	defer func(){
+		rf.persist()
+	}()
+	for rf.lastApplied<rf.commitIndex{
+		//rf.mu.Lock()
+		rf.lastApplied++
+		if rf.committed[rf.lastApplied]==true&&rf.logs[rf.lastApplied].Cmd!=nil{
+			//rf.mu.Unlock()
+			continue
+		}
+		if rf.logs[rf.lastApplied].Cmd==nil&&rf.lastApplied!=0{
+			rf.CurnilNum++
+			rf.logs[rf.lastApplied].Committed=true
+			rf.committed[rf.lastApplied]=true
+			//rf.mu.Unlock()
+			continue
+		}
+		newApplyMsg := new(ApplyMsg)
+		rf.logs[rf.lastApplied].Committed = true
+		rf.committed[rf.lastApplied] = true
+		newApplyMsg.Command = rf.logs[rf.lastApplied].Cmd
+		newApplyMsg.CommandIndex = rf.lastApplied-rf.CurnilNum
+		newApplyMsg.CommandValid = true
+		//DPrintf("主机：%d中索引为%d的日志提交完成,提交内容为：%v\n", rf.me, rf.lastApplied-rf.CurnilNum, rf.logs[rf.lastApplied].Cmd)
+		rf.applyCh <- *newApplyMsg
+		DPrintf("主机：%d中索引为%d的日志提交完成,提交内容为：%v\n", rf.me, rf.lastApplied-rf.CurnilNum, rf.logs[rf.lastApplied].Cmd)
+		//DPrintf("主机：%d中索引为%d的日志over\n", rf.me, rf.lastApplied-rf.CurnilNum)
+		//rf.mu.Unlock()
+	}
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -27,17 +59,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//// 2A、2B 阶段实现：处理其他节点的投票请求
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("主机：%d,AppendEntries启动\n", rf.me)
+	DPrintf("主机：%d,AppendEntries启动,当前日志为%v\n", rf.me, rf.logs)
+	//DPrintf("主机：%d,AppendEntries启动,args:%v\n", rf.me, args)
 	rf.updateTime()
 	
 	if rf.currentTerm <= args.Term {
 		if rf.currentTerm < args.Term {
 			rf.votedFor = -1
+			rf.persist()
 		}
 		if rf.state==Leader{
 			rf.state = Follower
 			rf.turnToLeader = 0
-			rf.currentTerm = args.Term
+			if args.Term>rf.currentTerm{
+				rf.currentTerm = args.Term
+				rf.persist()
+			}
 			reply.Term = rf.currentTerm
 			reply.Success=false
 			reply.ConflictIndex=args.PrevLogIndex+1
@@ -46,9 +83,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.state = Follower
 		rf.turnToLeader = 0
-		DPrintf("主机%d保持follower-心跳接收处\n", rf.me)
+		DPrintf("主机%d保持follower-心跳接收处,当前commitIndex：%d\n", rf.me,rf.commitIndex)
 		rf.currentTerm = args.Term
 		reply.Term = rf.currentTerm
+		rf.persist()
 		if rf.commitIndex>args.LeaderCommit{
 			reply.Success=false
 			reply.ConflictIndex=args.PrevLogIndex+1
@@ -64,36 +102,34 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				i := args.PrevLogIndex
 				if rf.logs[args.PrevLogIndex].Term<args.PrevLogTerm{
 					reply.ConflictIndex=args.PrevLogIndex-1
-				}else{
-					for i >= 0 && rf.logs[i].Term == args.PrevLogTerm {
+				}else if rf.logs[args.PrevLogIndex].Term>args.PrevLogTerm{
+					for i >= 0 && rf.logs[i].Term == rf.logs[args.PrevLogIndex].Term {
 						i--
 					}
 					reply.ConflictIndex = i + 1
 				}
 				reply.ConflictTerm=rf.logs[args.PrevLogIndex].Term
 			}
+			DPrintf("主机：%d reply内容为%v\n", rf.me, reply)
 			reply.Success = false
 		} else {
 			reply.Success = true
 			if args.Entries != nil {
 				rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
 				DPrintf("主机：%d 日志更新,当前日志内容为%v,当前term为%d\n", rf.me, rf.logs,rf.currentTerm)
+				if len(rf.committed) < len(rf.logs) {
+					// 扩展 committed 数组，新元素默认为 false
+					extra := make([]bool, len(rf.logs)-len(rf.committed))
+					rf.committed = append(rf.committed, extra...)
+				}
 				rf.lastLogIndex = len(rf.logs)
 				rf.persist()
 			} else {
 				DPrintf("主机：%d收到空心跳信息,当前日志内容为%v，当前term为%d\n", rf.me, rf.logs,rf.currentTerm)
 			}
 			if args.LeaderCommit > rf.commitIndex {
-				for rf.commitIndex < min(args.LeaderCommit, len(rf.logs)-1) {
-					rf.commitIndex++
-					newApplyMsg := new(ApplyMsg)
-					newApplyMsg.Command = rf.logs[rf.commitIndex].Cmd
-					newApplyMsg.CommandIndex = rf.commitIndex
-					newApplyMsg.CommandValid = true
-					rf.applyCh <- *newApplyMsg
-					DPrintf("主机：%d中索引为%d的日志提交完成", rf.me, rf.commitIndex)
-				}
-
+				rf.commitIndex=min(args.LeaderCommit,len(rf.logs)-1)
+				go rf.applyLog()
 			}
 		}
 	} else {
@@ -120,6 +156,7 @@ func (rf *Raft) HandleAppendEntriesReply(i int, args *AppendEntriesArgs, reply *
 			DPrintf("主机%d转为follower-心跳回复处\n", rf.me)
 			rf.votedFor = -1
 			rf.updateTime()
+			rf.persist()
 		} else {
 			if reply.ConflictTerm==-1{
 				rf.nextIndex[i] = reply.ConflictIndex
@@ -132,6 +169,10 @@ func (rf *Raft) HandleAppendEntriesReply(i int, args *AppendEntriesArgs, reply *
 					}
 				rf.nextIndex[i] = pos + 1
 			}
+			if rf.nextIndex[i]==0{
+				rf.nextIndex[i]++
+			}
+			DPrintf("Leader:%d 更新matchIndex[%d]为%d(其实没更新) 更新nextIndex[%d]为%d", rf.me, i, rf.matchIndex[i], i, rf.nextIndex[i])
 		}
 	} else if reply.Success == true&&rf.state==Leader{
 		rf.matchIndex[i] = args.PrevLogIndex + len(args.Entries)
@@ -159,7 +200,8 @@ func (rf *Raft) sendEntries(i int, wg *sync.WaitGroup) {
 		args.Entries = rf.logs[rf.nextIndex[i]:]
 	}
 	args.LeaderCommit = rf.commitIndex
-	DPrintf("主机：%d send AppendEntries RPC to %d begin\n且日志内容中PrevLogIndex: %d,PrevLogTerm: %d,LeaderCommit:%d,Entries: %v", rf.me, i, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
+	DPrintf("主机：%d send AppendEntries RPC to %d begin,自身日志为%v\n且日志内容中PrevLogIndex: %d,PrevLogTerm: %d,LeaderCommit:%d,Entries: %v", rf.me, i,rf.logs, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
+	//DPrintf("主机：%d send AppendEntries RPC to %d begin,args: %v", rf.me, i,args)
 
 	// 2. 创建20ms超时的上下文：ctx用于控制超时，cancel用于主动取消（需defer避免泄漏）
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -196,6 +238,7 @@ func (rf *Raft) sendEntries(i int, wg *sync.WaitGroup) {
 	}
 }
 
+
 func (rf *Raft) checkCommit() {
 	for {
 		rf.mu.Lock()
@@ -204,25 +247,24 @@ func (rf *Raft) checkCommit() {
 			time.Sleep(20 * time.Millisecond)
 			continue
 		} else {
-			numsCommit := 0
-			for i := 0; i < len(rf.peers); i++ {
-				if i == rf.me {
-					numsCommit++
-					continue
-				} else if rf.matchIndex[i] > rf.commitIndex || rf.commitIndex == -1 {
-					numsCommit++
+			for N := len(rf.logs)-1; N >rf.commitIndex; N-- {
+				if rf.logs[N].Term != rf.currentTerm {
+					break
 				}
-			}
-			if numsCommit*2 > len(rf.peers) && rf.state == Leader && rf.commitIndex < len(rf.logs) {
-				rf.commitIndex++
-				newApplymsg := new(ApplyMsg)
-				newApplymsg.Command = rf.logs[rf.commitIndex].Cmd
-				newApplymsg.CommandIndex = rf.commitIndex
-				newApplymsg.CommandValid = true
-				rf.applyCh <- *newApplymsg
-				DPrintf("主机：%d中索引为%d的日志提交完成", rf.me, rf.commitIndex)
-				rf.mu.Unlock()
-				continue
+				numsCommit := 0
+				for i := 0; i < len(rf.peers); i++ {
+					if i == rf.me {
+						numsCommit++
+						continue
+					} else if rf.matchIndex[i] >= N {
+						numsCommit++
+					}
+				}
+				if numsCommit*2 > len(rf.peers) && rf.state == Leader{
+					rf.commitIndex=N;
+					go rf.applyLog()
+					break
+				}
 			}
 			rf.mu.Unlock()
 			time.Sleep(20 * time.Millisecond)
@@ -231,11 +273,17 @@ func (rf *Raft) checkCommit() {
 }
 
 func (rf *Raft) initLeader() {
-	for i := 0; i < len(rf.peers); i++ {
-		rf.nextIndex[i] = len(rf.logs)
+	if rf.killed(){
+		return
 	}
 	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = len(rf.logs)
 		rf.matchIndex[i] = 0
+	}
+	for i:=1;i<len(rf.logs);i++{
+		if rf.logs[i].Cmd==nil{
+			rf.MaxnilNum++
+		}
 	}
 	rf.turnToLeader = 1
 	DPrintf("主机：%d  initLeader完成", rf.me)
@@ -244,7 +292,9 @@ func (rf *Raft) initLeader() {
 // 检查是否是leader，如果是leader则向其它所有server发送心跳，如果不是leader则空转或time.sleep
 func (rf *Raft) LeaderAction() {
 	var wg sync.WaitGroup
+	var lastLoopTime time.Time // 用于记录上一次循环开始的时间
 	for {
+		//如果已经被killed，返回
 		if rf.killed() {
 			wg.Wait()
 			return
@@ -253,12 +303,21 @@ func (rf *Raft) LeaderAction() {
 		if rf.state != Leader {
 			time.Sleep(10 * time.Millisecond)
 		} else {
+			//turnToLeader==0代表刚从follower转为leader，自然要initLeader
 			if rf.turnToLeader == 0 {
+				rf.MaxnilNum=0
 				rf.initLeader()
 			}
+			currentTime := time.Now()
+			if !lastLoopTime.IsZero() {
+				interval := currentTime.Sub(lastLoopTime)
+				DPrintf("主机：%d，LeaderAction 循环间隔: %v\n", rf.me, interval)
+			}
+			lastLoopTime = currentTime
+			//leader需要不断查看是否有可以提交的日志
 			go rf.checkCommit()
 			i := 0
-			wg = sync.WaitGroup{}
+			wg = sync.WaitGroup{}//用于同步
 			for i = 0; i < len(rf.peers); i++ {
 				if i == rf.me {
 					continue
@@ -270,11 +329,12 @@ func (rf *Raft) LeaderAction() {
 					//是领导者就通过协程并发发送
 					DPrintf("主机：%d，在心跳阶段调用wg.add（1）\n", rf.me)
 					wg.Add(1)
+					//通过协程向每个follower发送心跳
 					go rf.sendEntries(i, &wg)
 				}
 			}
 			wg.Wait()
-			time.Sleep(HeartbeatInterval)
+			time.Sleep(HeartbeatInterval)//定期发送心跳
 		}
 	}
 }

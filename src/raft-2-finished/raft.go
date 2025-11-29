@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// import "bytes"
-// import "../labgob"
+import "bytes"
+import "../labgob"
 
 // 当每个 Raft 节点意识到后续日志条目已被提交时，
 // 该节点应通过传给 Make () 函数的 applyCh 通道，
@@ -40,7 +40,7 @@ const (
 // 都应向同一服务器中的服务（或测试器）发送一个 ApplyMsg。
 // CommandValid：布尔值，标识该消息是否包含一个新提交的日志条目（true 表示有效命令）。
 // Command：实际的命令内容（由上层服务传入，如键值对操作）。
-// CommandIndex：该命令在日志中的索引（用于上层服务确认命令顺序）。
+// CommandIndex：该命令在提交后日志中的索引（用于上层服务确认命令顺序）（现在我们在底层日志中加入了nil日志）。
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -51,6 +51,8 @@ type one_log struct {
 	Cmd   interface{}
 	Term  int
 	Index int
+	//true_index int
+	Committed bool//其实可以舍弃，但为了方便调试保留
 }
 
 // Raft 一个实现了单个 Raft 节点的 Go 对象。
@@ -63,6 +65,7 @@ type Raft struct {
 	currentTerm     int                 //服务器见过的最新任期号（首次启动时为 0，单调递增）
 	votedFor        int                 //在当前任期中投票给了哪个候选者 ID（若无则为 null）
 	logs            []one_log           //日志条目数组；每个条目包含一条状态机命令，以及该条目被领导者接收时的任期号（首条索引为 1）
+	committed       []bool
 	commitIndex     int                 // 已提交的最高日志条目的索引（初始为 0）
 	lastApplied     int                 // 已应用的最高日志条目的索引（初始为 0）
 	nextIndex       []int               // 领导者发送给每个追随者的下一个日志条目的索引（初始为日志长度 + 1）
@@ -72,70 +75,84 @@ type Raft struct {
 	lastMessageTime time.Time           // 上次收到消息的时间（用于选举超时）
 	ElectionTimeout time.Duration       // 选举超时时间（随机值，用于触发选举）
 	turnToLeader    int                 //控制initleader只在转换为leader时进行
-	applyCh			chan ApplyMsg
+	applyCh			chan ApplyMsg		//用于向上层提交命令
+	MaxnilNum       int					//最大空白命令，用于用户在向主机提交日志时，返回正确的索引
+	CurnilNum       int					//当前空白命令，用于主机向上层提交日志时确定真实索引
 	// 待实现的状态（对应论文图 2）
 	// 2A 阶段：需要添加与 leader 选举相关的状态（如当前任期、角色、投票记录等）
 	// 2B 阶段：添加日志相关状态（日志条目数组、提交索引等）
 	// 2C 阶段：添加需要持久化的状态（任期、投票记录等）
 }
 
+//随机产生一个超时时间
 func (rf *Raft) randomTimeout() time.Duration {
 	halfBase := int64(raftElectionTimeout / 2) // 50ms 对应的纳秒数
 	offset := rand.Int63n(halfBase)
 	return raftElectionTimeout + time.Duration(offset)
 }
 
+//2A时实现，用于确定当前是否是leader
 func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
-	// Your code here (2A).
 	DPrintf("主机：%d,GetState()启动\n", rf.me)
 	term = rf.currentTerm
 	isleader = rf.state == Leader
 	return term, isleader
 }
 
+//更新收到消息的时间（如果超时了是要选举的）
 func (rf *Raft) updateTime() {
 	rf.lastMessageTime = time.Now()
 	rf.ElectionTimeout = rf.randomTimeout()
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
+
 // // 2C 阶段实现：将持久化状态编码并保存到 persister
 // 示例：使用 labgob 编码状态，通过 rf.persister.SaveRaftState() 保存
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+    e := labgob.NewEncoder(w)
+    e.Encode(rf.currentTerm)
+    e.Encode(rf.votedFor)
+    e.Encode(rf.logs)        // ✅ 
+	e.Encode(rf.committed)
+    data := w.Bytes()
+    rf.persister.SaveRaftState(data)  // ✅ 完全覆盖之前的内容
 }
 
-// restore previously persisted state.
 // // 2C 阶段实现：从 persister 读取并解码持久化状态
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+// 1. 创建读取缓冲区
+    r := bytes.NewBuffer(data)
+    
+    // 2. 创建解码器
+    d := labgob.NewDecoder(r)
+    
+    // 3. 声明临时变量接收解码结果
+    var currentTerm int
+    var votedFor int
+    var logs []one_log
+	var committed []bool
+    
+    // 4. 按顺序解码，并检查错误
+    if d.Decode(&currentTerm) != nil ||
+       d.Decode(&votedFor) != nil ||
+       d.Decode(&logs) != nil ||
+	   d.Decode(&committed) != nil {
+        DPrintf("Error decoding Raft state")
+    } else {
+        // 5. 全部解码成功，才更新 Raft 状态
+        rf.currentTerm = currentTerm
+        rf.votedFor = votedFor
+        rf.logs = logs
+		rf.lastLogIndex = len(rf.logs)
+		rf.committed = committed
+    }
 }
 
 // 使用 Raft 的服务（例如键值服务器）希望发起对 “下一条待追加到 Raft 日志的命令” 的共识流程。
@@ -161,10 +178,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	index = len(rf.logs)
 	term = rf.currentTerm
-	rf.logs = append(rf.logs, one_log{Cmd: command, Term: term, Index: index})
-	DPrintf("主机：%d是leader,日志增加完成\n", rf.me)
+	rf.logs = append(rf.logs, one_log{Cmd: command, Term: term, Index: index, Committed: false})
+	rf.committed = append(rf.committed, false)
+	DPrintf("主机：%d是leader,日志增加完成,日志内容为：%v\n", rf.me,rf.logs)
 	rf.persist()
-	return index, term, isLeader
+	//注意返回的结果已经删去了nil命令
+	DPrintf("主机：%d,index:%d,rf.MaxnilNum:%d\n", rf.me,index,rf.MaxnilNum)
+	return index-rf.MaxnilNum, term, isLeader
 }
 
 // 测试器在每次测试结束后不会终止 Raft 创建的 goroutine，但会调用 Kill () 方法。
@@ -184,6 +204,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+//初始化
 func (rf *Raft) Init() {
 	rf.dead = 0
 	rf.currentTerm = 1
@@ -201,9 +222,24 @@ func (rf *Raft) Init() {
 	rf.turnToLeader=0
 	zero_log := one_log{
     Term:  0,
+	Committed: false,
 	}
 	rf.logs = append(rf.logs, zero_log)
+	rf.MaxnilNum = 0
+	rf.CurnilNum = 0
+	rf.committed = append(rf.committed, false)
 	DPrintf("主机：%d,RF建立完成\n", rf.me)
+	
+}
+
+func (rf *Raft) updateCommitIndex() {
+	for i := rf.commitIndex + 1; i < len(rf.logs); i++ {
+		if rf.committed[i] {
+			rf.commitIndex = i
+		} else {
+			break
+		}
+	}
 }
 
 // Make 当前服务器的端口是 peers [me]。所有服务器的 peers [] 数组顺序相同。
@@ -218,6 +254,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh=applyCh
 	rf.me = me
 	rf.Init()
+	rf.readPersist(persister.ReadRaftState())
+	rf.persist()
+	rf.updateCommitIndex()
 	//计划建立两个协程，一个协程定期检查是否超时，如果超时就转变为候选者
 	//第二个协程会检查当前是否是leader，如果是leader则定期向所有peer发送心跳
 	// Your initialization code here (2A, 2B, 2C).
@@ -226,7 +265,5 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.FollowerAction()
 	DPrintf("主机：%d,FollowerAction()启动\n", rf.me)
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
 	return rf
 }
