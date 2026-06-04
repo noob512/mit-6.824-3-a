@@ -423,11 +423,13 @@ func (rf *Raft) checkCommit() {
                     break 
                 }
             }
-            rf.mu.Unlock() // 检查完毕，释放锁
+            // 2. 带着锁直接调用 Wait()！
+            // Wait 会自动帮你 Unlock，醒来时会自动帮你重新 Lock。
+            rf.commitCond.Wait() 
             
+            rf.mu.Unlock() // 3. Wait 结束后释放锁，进入下一轮循环
             // ❌ 架构缺陷：成功或失败后的无脑睡眠。
             // 这种基于时间的轮询不仅响应迟钝（最多延迟 20ms），而且极耗性能。
-			rf.commitCond.Wait()
             // time.Sleep(20 * time.Millisecond)
         }
     }
@@ -526,7 +528,7 @@ func (rf *Raft) LeaderAction() {
 
             // 4. 提交检查：开启一个新协程，去检查是否可以更新 commitIndex
             // 🚨 【极其危险】：这里就是导致你 30 万个协程泄漏的源头！
-            //go rf.checkCommit()
+            go rf.checkCommit()
 
             // 5. 并发发送心跳准备
             i := 0
