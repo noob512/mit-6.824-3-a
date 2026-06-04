@@ -79,6 +79,7 @@ type Raft struct {
 	applyCh			chan ApplyMsg		//用于向上层提交命令
 	MaxnilNum       int					//最大空白命令，用于用户在向主机提交日志时，返回正确的索引
 	CurnilNum       int					//当前空白命令，用于主机向上层提交日志时确定真实索引
+	commitCond       *sync.Cond
 	// 待实现的状态（对应论文图 2）
 	// 2A 阶段：需要添加与 leader 选举相关的状态（如当前任期、角色、投票记录等）
 	// 2B 阶段：添加日志相关状态（日志条目数组、提交索引等）
@@ -118,41 +119,114 @@ func (rf *Raft) persist() {
     e.Encode(rf.currentTerm)
     e.Encode(rf.votedFor)
     e.Encode(rf.logs)        // ✅ 
-	e.Encode(rf.committed)
+	//e.Encode(rf.committed)
     data := w.Bytes()
     rf.persister.SaveRaftState(data)  // ✅ 完全覆盖之前的内容
 }
 
-// // 2C 阶段实现：从 persister 读取并解码持久化状态
+// readPersist 是 Raft 实现持久化恢复的核心方法。
+// 它的作用是当节点重启（Crash & Restart）时，从底层的持久化存储器（Persister）
+// 中读取之前保存的二进制状态快照，并将其还原到 Raft 对象的内存内存字段中，
+// 从而确保节点能够“找回记忆”，维持分布式系统的连续性。
+//
+// 参数：
+//   data: 从 persister.ReadRaftState() 获取的原始二进制数据流。
+// func (rf *Raft) readPersist(data []byte) {
+//     // 1. 基础校验：如果 data 为空（例如节点第一次启动），则无需执行任何恢复逻辑，直接跳出。
+//     if data == nil || len(data) < 1 { 
+//         return
+//     }
+
+//     // 2. 创建读取缓冲区 (Buffer)：将 byte 数组转换成一个可流式读取的 Reader 对象，
+//     // 供后续的 gob 解码器使用。
+//     r := bytes.NewBuffer(data)
+    
+//     // 3. 初始化 labgob 解码器：labgob 是 MIT 为此课程封装的 go 标准库 encoding/gob 的包装器，
+//     // 它能将内存中的数据结构自动序列化为字节流，并在此处反序列化恢复。
+//     d := labgob.NewDecoder(r)
+    
+//     // 4. 定义用于承接恢复数据的临时中间变量。
+//     // 注意：变量类型必须与 persist() 函数写入时的顺序和类型完全严格对应！
+//     var currentTerm int
+//     var votedFor int
+//     var logs []one_log // 注意这里必须对应你底层使用的日志存储结构类型
+//     var committed []bool
+    
+//     // 5. 按顺序执行反序列化 (Decode)。
+//     // 这里使用了短路逻辑，如果任何一步解码失败（返回 error），则整个恢复动作放弃，
+//     // 保护内存状态不被破坏（即“原子性恢复”）。
+//     if d.Decode(&currentTerm) != nil ||
+//        d.Decode(&votedFor) != nil ||
+//        d.Decode(&logs) != nil ||
+//        d.Decode(&committed) != nil {
+        
+//         // 如果序列化数据损坏，通常意味着磁盘数据异常，打印错误日志以便排查。
+//         DPrintf("Error decoding Raft state")
+//     } else {
+//         // 6. 原子性更新内存状态：
+//         // 只有在所有字段都成功读取后，才一次性覆盖原有的内存变量。
+//         // 这样可以确保节点要么恢复到崩溃前的完整状态，要么保持空白，绝不会出现“半恢复”的混乱状态。
+//         rf.currentTerm = currentTerm
+//         rf.votedFor = votedFor
+//         rf.logs = logs
+        
+//         // 🌟 辅助索引更新：根据恢复后的日志长度，即时更新末尾索引。
+//         rf.lastLogIndex = len(rf.logs)
+//         rf.committed = committed
+        
+//         DPrintf("节点 %d 成功恢复状态：Term=%d, LogLen=%d, VotedFor=%d", 
+//                  rf.me, rf.currentTerm, rf.lastLogIndex, rf.votedFor)
+//     }
+// }
+
+// readPersist 是 Raft 实现持久化恢复的核心方法。
+// 它的作用是当节点重启（Crash & Restart）时，从底层的持久化存储器（Persister）
+// 中读取之前保存的二进制状态快照，并还原非易失性状态 (Persistent State)。
+// 
+// 🚨 警告：绝对不能恢复 commitIndex、lastApplied 以及 committed 数组！
+// 这些易失性状态必须在重启时清零，以触发状态机的强制回放。
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-// 1. 创建读取缓冲区
+    // 1. 基础校验：如果 data 为空（例如节点第一次启动），直接跳出
+    if data == nil || len(data) < 1 { 
+        return
+    }
+
+    // 2. 创建读取缓冲区 (Buffer)
     r := bytes.NewBuffer(data)
     
-    // 2. 创建解码器
+    // 3. 初始化 labgob 解码器
     d := labgob.NewDecoder(r)
     
-    // 3. 声明临时变量接收解码结果
+    // 4. 仅仅声明 Raft 论文规定的三大【持久化状态】
     var currentTerm int
     var votedFor int
-    var logs []one_log
-	var committed []bool
+    var logs []one_log // 注意这里必须对应你底层使用的日志存储结构类型
     
-    // 4. 按顺序解码，并检查错误
+    // ❌ 删除了 var committed []bool，严禁将提交状态落盘！
+
+    // 5. 按顺序执行反序列化 (Decode)。
+    // 必须和 persist() 函数里 e.Encode() 的顺序严格一致！
     if d.Decode(&currentTerm) != nil ||
        d.Decode(&votedFor) != nil ||
-       d.Decode(&logs) != nil ||
-	   d.Decode(&committed) != nil {
+       d.Decode(&logs) != nil {
+        
         DPrintf("Error decoding Raft state")
     } else {
-        // 5. 全部解码成功，才更新 Raft 状态
+        // 6. 原子性更新内存中的持久化状态：
         rf.currentTerm = currentTerm
         rf.votedFor = votedFor
         rf.logs = logs
-		rf.lastLogIndex = len(rf.logs)
-		rf.committed = committed
+        
+        // 7. 更新辅助索引
+        rf.lastLogIndex = len(rf.logs)
+        
+        // 🌟 核心修复：易失性状态绝不能从磁盘读！必须全新初始化。
+        // 这里重新 make 一个全为 false 的布尔数组。
+        // 预留一些缓冲容量 (比如 len+1000)，防止你在后续高并发追加时频繁触发扩容或越界 Panic。
+        rf.committed = make([]bool, len(rf.logs) + 1000) 
+        
+        DPrintf("节点 %d 成功恢复状态：Term=%d, LogLen=%d, VotedFor=%d", 
+                 rf.me, rf.currentTerm, rf.lastLogIndex, rf.votedFor)
     }
 }
 
@@ -229,6 +303,7 @@ func (rf *Raft) Init() {
 	rf.MaxnilNum = 0
 	rf.CurnilNum = 0
 	rf.committed = append(rf.committed, false)
+	
 	DPrintf("主机：%d,RF建立完成\n", rf.me)
 	
 }
@@ -243,29 +318,70 @@ func (rf *Raft) updateCommitIndex() {
 	}
 }
 
-// Make 当前服务器的端口是 peers [me]。所有服务器的 peers [] 数组顺序相同。
-// persister 是当前服务器用于保存其持久化状态的地方，并且初始时可能包含最近保存的状态（如果有的话）。
-// applyCh 是一个通道，测试器或服务期望 Raft 通过该通道发送 ApplyMsg 消息。
-// Make () 必须快速返回，因此它应该为任何长时间运行的工作启动 goroutine
+// Make 函数是 Raft 实例的入口点。它负责初始化所有必要的内部结构，
+// 从持久化存储中加载崩溃前的状态，并启动后台守护协程（Goroutines）来驱动 Raft 的共识逻辑。
+//
+// 参数说明：
+//   peers: 集群中所有节点的 RPC 连接端点数组，用于向其他节点发送投票或同步日志。
+//   me: 当前节点的唯一 ID，也是在 peers 数组中的索引。
+//   persister: 持久化存储接口，用于在崩溃后通过读取磁盘来恢复 (Term, Log, Vote) 等数据。
+//   applyCh: 该节点应用日志后，通过此通道通知上层应用（如 KVServer）执行具体的 Command。
 func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.applyCh=applyCh
-	rf.me = me
-	rf.Init()
-	rf.readPersist(persister.ReadRaftState())
-	rf.persist()
-	rf.updateCommitIndex()
-	//计划建立两个协程，一个协程定期检查是否超时，如果超时就转变为候选者
-	//第二个协程会检查当前是否是leader，如果是leader则定期向所有peer发送心跳
-	// Your initialization code here (2A, 2B, 2C).
-	go rf.LeaderAction()
-	DPrintf("主机：%d,LeaderAction()启动\n", rf.me)
-	go rf.FollowerAction()
-	go rf.applyLog()
-	DPrintf("主机：%d,FollowerAction()启动\n", rf.me)
-	// initialize from state persisted before a crash
-	return rf
+    persister *Persister, applyCh chan ApplyMsg) *Raft {
+    
+    // 初始化 Raft 结构体实例
+    rf := &Raft{}
+    rf.peers = peers
+    rf.persister = persister
+    rf.applyCh = applyCh
+    rf.me = me
+    rf.commitCond = sync.NewCond(&rf.mu) // 🌟 用 rf 的互斥锁初始化条件变量
+    // ==========================================
+    // 阶段 1：内存数据结构的初始化
+    // ==========================================
+    // rf.Init() 负责初始化所有关键内部计数器：
+    // - currentTerm (当前任期)
+    // - votedFor (当前任期投给谁)
+    // - log[] (日志条目数组，下标需从 1 开始防止空索引污染)
+    // - commitIndex, lastApplied 等状态变量
+    rf.Init()
+    
+    // ==========================================
+    // 阶段 2：恢复持久化状态（崩溃恢复的关键）
+    // ==========================================
+    // 从 persister 中读取之前保存的字节流，将其反序列化回当前内存中。
+    // 如果是第一次运行，persister 可能为空，此处应处理零值情况。
+    rf.readPersist(persister.ReadRaftState())
+    
+    // ==========================================
+    // 阶段 3：状态一致性检查
+    // ==========================================
+    // 强制执行一次持久化，确保新实例的初始状态（即使是默认值）已正确写入存储，
+    // 防止因重启后的写操作没来得及刷盘就再次崩溃导致数据丢失。
+    rf.persist()
+    
+    // 检查并更新本地的提交索引，确保恢复后的节点对当前全局提交情况有正确的认知。
+    rf.updateCommitIndex()
+
+    // ==========================================
+    // 阶段 4：启动后台驱动协程 (Goroutines)
+    // ==========================================
+    // 必须确保这些循环函数是异步的，避免阻塞 Make() 的快速返回。
+    
+    // 1. LeaderAction: 若当前节点被选举为 Leader，该协程会定时发送心跳 (AppendEntries)
+    //    并负责管理日志复制（更新 NextIndex/MatchIndex）。
+    go rf.LeaderAction()
+    DPrintf("主机：%d, LeaderAction() 启动\n", rf.me)
+    
+    // 2. FollowerAction: 实现 Raft 的超时机制。如果超过选举超时 (Election Timeout) 
+    //    未收到心跳，该协程会自动切换状态，发起新一轮选举。
+    go rf.FollowerAction()
+    
+    // 3. applyLog: 监听提交的日志索引变化，一旦有新的日志被 commit，
+    //    将其包装成 ApplyMsg 放入 applyCh，通知 KVServer 应用到状态机。
+    go rf.applyLog()
+    
+    DPrintf("主机：%d, FollowerAction() 启动\n", rf.me)
+    
+    return rf // 返回构建完成、准备就绪的 Raft 节点实例
 }

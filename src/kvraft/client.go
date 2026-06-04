@@ -83,7 +83,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	}
 	reply := PutAppendReply{}
 	//DPrintf("客户端%v PutAppend %v %v %v\n", ck.pos, key, value, op)
-	ck.numOfOrders++
 	i := 0
 	// if args.Op=="Put"{
 	// 	DPrintf("客户端%v PutAppend key:%v\n", ck.pos, key)
@@ -104,12 +103,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		if reply.Err == OK {
 			DPrintf("客户端%v PutAppend key:%v,value:%v\n", ck.pos, key, value)
+			ck.numOfOrders++
 		} else {
 			DPrintf("客户端%v PutAppend key:%v,value:%v,但出现错误未能获得OK,错误类型为%v\n", ck.pos, key, value, reply.Err)
 		}
 		i = (i + 1) % len(ck.servers)
+		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(10 * time.Millisecond)
 }
 
 func (ck *Clerk) Put(key string, value string) {

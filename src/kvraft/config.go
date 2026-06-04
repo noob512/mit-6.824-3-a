@@ -385,45 +385,90 @@ func (cfg *config) ShutdownServer(i int) {
 	}
 }
 
-// 如果重启服务器，首先调用ShutdownServer
-// 原注释：如果要重启服务器，必须先调用ShutdownServer函数来正确关闭服务器
+// StartServer 是测试框架用于“启动”或“重启”集群中某个指定服务器节点（KVServer + Raft）的核心生命周期管理函数。
+// 如果你想模拟节点重启（崩溃恢复），在调用本函数之前，必须先调用 cfg.ShutdownServer(i) 清除旧实例。
+//
+// 它的主要职责是：
+// 1. 为即将苏醒的节点铺设全新的网络通信基础设施（RPC 端点）。
+// 2. 将崩溃前保存的磁盘数据（Persister 快照）原封不动地装载回节点的内存。
+// 3. 实例化上层的 KVServer 和底层的 Raft 协议，并将它们绑定启动。
+// 4. 将该节点挂载到全局的 labrpc 虚拟网络中，使其重新能够接客（收发网络请求）。
+//
+// 参数：
+//   i: 需要启动或重启的服务器节点的全局唯一编号 [0, n-1]
 func (cfg *config) StartServer(i int) {
-	cfg.mu.Lock() // 加锁保护共享资源
+    cfg.mu.Lock() // 加锁，保护配置结构体内部共享的网络注册表和持久化器等资源
 
-	//为多个服务器创建连接，这些是网络基础设施，提供服务器间的通信能力，是raft和kv数据库共同的底层服务器
-	// 创建一组新的传出ClientEnd名称（用于与其他服务器通信）
-	cfg.endnames[i] = make([]string, cfg.n) // 为服务器i创建与其他n个服务器通信的端点名称数组
-	for j := 0; j < cfg.n; j++ {
-		cfg.endnames[i][j] = randstring(20) // 为每个连接生成20位随机字符串作为端点名称
-	}
+    // ==========================================
+    // 阶段 1：铺设全新的底层网络通信基建（RPC）
+    // ==========================================
+    // 为了防止重启前后发生幽灵消息（Phantom Message）的干扰，测试框架会为重启后的节点
+    // 分配一套带有全新随机名的通信端口（ClientEnd），这意味着旧的、堵在网线里的包再也找不到它了。
+    
+    // 为服务器 i 创建一个切片，用于存放它给集群中其他 n 个服务器打电话时用的“电话号码”
+    cfg.endnames[i] = make([]string, cfg.n) 
+    for j := 0; j < cfg.n; j++ {
+        // 生成一个 20 位的随机乱码作为端点名称，防止和崩溃前使用的网络端口重名
+        cfg.endnames[i][j] = randstring(20) 
+    }
 
-	// 创建一组新的ClientEnds（客户端端点）
-	ends := make([]*labrpc.ClientEnd, cfg.n) // 创建客户端端点数组
-	for j := 0; j < cfg.n; j++ {
-		ends[j] = cfg.net.MakeEnd(cfg.endnames[i][j]) // 在网络中创建客户端端点
-		cfg.net.Connect(cfg.endnames[i][j], j)        // 将端点连接到服务器j
-	}
+    // 创建客户端端点（ClientEnds）数组
+    // 这些 ClientEnd 对象本质上就是 Raft 节点发送 AppendEntries 和 RequestVote RPC 的句柄。
+    ends := make([]*labrpc.ClientEnd, cfg.n) 
+    for j := 0; j < cfg.n; j++ {
+        // 根据刚才生成的随机号码，在虚拟网线中注册创建出实际的通信端点
+        ends[j] = cfg.net.MakeEnd(cfg.endnames[i][j]) 
+        
+        // 【核心动作】在网络底层，把当前服务器 i 用于呼叫服务器 j 的这根线，真正插在服务器 j 身上。
+        // （此时服务器 j 可能活着，也可能死着，但这根线已经铺设好了）
+        cfg.net.Connect(cfg.endnames[i][j], j)        
+    }
 
-	// 创建新的持久化器，防止旧实例覆盖新实例的持久化状态
-	// 将旧持久化器的状态复制给新持久化器
-	// 这样规范就是将最后持久化的状态传递给StartKVServer()
-	if cfg.saved[i] != nil { // 如果之前存在持久化器
-		cfg.saved[i] = cfg.saved[i].Copy() // 复制旧持久化器的状态到新持久化器
-	} else {
-		cfg.saved[i] = raft.MakePersister() // 创建新的持久化器
-	}
-	cfg.mu.Unlock() // 解锁
+    // ==========================================
+    // 阶段 2：重构“非易失性”磁盘（恢复 Persister）
+    // ==========================================
+    // 持久化器（Persister）在测试框架中是独立于 Server 存活的。当节点 Crash 掉，它的内存灰飞烟灭，
+    // 但是它留在 cfg.saved[i] 里的 Persister 依然健在，这就是它的“硬盘”。
+    
+    if cfg.saved[i] != nil { 
+        // 如果之前存在持久化器（说明这是一次 重启 Restart 操作）
+        // 必须执行深拷贝 (Deep Copy)。这是为了防止万一刚苏醒的新节点疯狂写盘，
+        // 把旧节点还卡在某个协程里的幽灵指针所指向的数据给污染了。
+        // 将旧持久化器里原封不动的 RaftLog、Term 和 VotedFor 交给即将诞生的新实例。
+        cfg.saved[i] = cfg.saved[i].Copy() 
+    } else {
+        // 如果为 nil（说明这是一次 全新启动 Initial Start 操作，比如测试刚开始）
+        // 那就给它分配一块崭新、空白的模拟硬盘。
+        cfg.saved[i] = raft.MakePersister() 
+    }
+    cfg.mu.Unlock() // 网络和硬盘准备完毕，解锁
 
-	// 启动KV服务器
-	cfg.kvservers[i] = StartKVServer(ends, i, cfg.saved[i], cfg.maxraftstate)
+    // ==========================================
+    // 阶段 3：正式启动业务系统（应用层与共识层）
+    // ==========================================
+    // 调用我们在 server.go 中编写的核心入口，把准备好的网络句柄、节点ID、装满旧数据的硬盘、
+    // 以及快照阈值传进去，唤醒上层应用状态机（KVServer）和底层共识引擎（Raft）。
+    cfg.kvservers[i] = StartKVServer(ends, i, cfg.saved[i], cfg.maxraftstate)
 
-	// 创建RPC服务
-	kvsvc := labrpc.MakeService(cfg.kvservers[i])     // 为KV服务器创建服务
-	rfsvc := labrpc.MakeService(cfg.kvservers[i].rf)  // 为底层Raft创建服务
-	srv := labrpc.MakeServer()                        // 创建服务器实例
-	srv.AddService(kvsvc)                             // 添加KV服务
-	srv.AddService(rfsvc)                             // 添加Raft服务
-	cfg.net.AddServer(i, srv)                         // 将服务器添加到网络中
+    // ==========================================
+    // 阶段 4：将服务暴露在网络中，开门接客
+    // ==========================================
+    // 在分布式系统中，必须通过 RPC 将自己的服务函数注册暴露出去，别人才能通过网络调用你。
+    
+    // 把 KV 层的 RPC 接口（如 PutAppend, Get）注册为网络服务
+    kvsvc := labrpc.MakeService(cfg.kvservers[i])     
+    
+    // 把底层的 Raft RPC 接口（如 AppendEntries, RequestVote）注册为网络服务
+    rfsvc := labrpc.MakeService(cfg.kvservers[i].rf)  
+    
+    // 创建一个包含所有上述服务的虚拟 Server（类似于创建一个 Nginx 服务器）
+    srv := labrpc.MakeServer()                        
+    srv.AddService(kvsvc)                             
+    srv.AddService(rfsvc)                             
+    
+    // 【最终上线】将这个包裹了 KV 和 Raft 服务的集装箱，正式挂载到虚拟网格（Network）的对应槽位上。
+    // 从这一刻起，客户端和其他 Raft 节点发往节点 i 的 RPC 请求，就能打通并被成功处理了。
+    cfg.net.AddServer(i, srv)                         
 }
 
 func (cfg *config) Leader() (bool, int) {
