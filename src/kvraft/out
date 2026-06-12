@@ -1,5 +1,0 @@
-Test: unreliable net, restarts, partitions, many clients, linearizability checks (3A) ...
-labgob warning: Decoding into a non-default variable/field Err may not work
-  ... Passed --  25.6  7 10682  562
-PASS
-ok  	_/home/ren/6.824-A/src/kvraft	25.558s

@@ -201,6 +201,7 @@ func (rf *Raft) FollowerAction() {
 					rf.state = Leader
 					rf.logs = append(rf.logs, one_log{ Term: rf.currentTerm, Index: len(rf.logs), Committed: false})
 					rf.committed = append(rf.committed, false)
+					rf.turnToLeader=0
 					rf.persist()
 					rf.mu.Unlock()
 				}

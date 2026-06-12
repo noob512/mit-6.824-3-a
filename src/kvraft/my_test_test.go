@@ -1,17 +1,20 @@
 package kvraft
 
-import "../porcupine"
-import "../models"
-import "testing"
-import "strconv"
-import "time"
-import "math/rand"
-import "log"
-import "strings"
-import "sync"
-import "sync/atomic"
-import "fmt"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"../models"
+	"../porcupine"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -28,7 +31,7 @@ func Get(cfg *config, ck *Clerk, key string) string {
 
 func Put(cfg *config, ck *Clerk, key string, value string) {
 	ck.Put(key, value) // 通过客户端代理向分布式KV系统发送Put请求
-	cfg.op()          // 记录一次操作，用于统计操作数量
+	cfg.op()           // 记录一次操作，用于统计操作数量
 }
 
 func Append(cfg *config, ck *Clerk, key string, value string) {
@@ -45,16 +48,16 @@ func check(cfg *config, t *testing.T, ck *Clerk, key string, value string) {
 
 func run_client(t *testing.T, cfg *config, me int, ca chan bool, fn func(me int, ck *Clerk, t *testing.T)) {
 	ok := false
-	defer func() { ca <- ok }()  // defer语句，最后执行
-	
-	ck := cfg.makeClient(cfg.All())  // 创建客户端
-	ck.pos=me
-	
-	fn(me, ck, t)  // 执行fn函数 ← 这里是执行fn的地方
-	
-	ok = true      // fn执行完成后才执行这行
-	
-	cfg.deleteClient(ck)  // fn执行完成后才执行清理 ← 这里执行清理
+	defer func() { ca <- ok }() // defer语句，最后执行
+
+	ck := cfg.makeClient(cfg.All()) // 创建客户端
+	ck.pos = me
+
+	fn(me, ck, t) // 执行fn函数 ← 这里是执行fn的地方
+
+	ok = true // fn执行完成后才执行这行
+
+	cfg.deleteClient(ck) // fn执行完成后才执行清理 ← 这里执行清理
 }
 
 // spawn_clients_and_wait 启动ncli个客户端并等待它们全部完成
@@ -63,19 +66,19 @@ func run_client(t *testing.T, cfg *config, me int, ca chan bool, fn func(me int,
 // ncli: 客户端数量
 // fn: 每个客户端执行的函数，参数为(客户端编号, 客户端对象, 测试对象)
 func spawn_clients_and_wait(t *testing.T, cfg *config, ncli int, fn func(me int, ck *Clerk, t *testing.T)) {
-	ca := make([]chan bool, ncli)  // 创建结果通道数组，用于接收每个客户端的执行结果
-	
+	ca := make([]chan bool, ncli) // 创建结果通道数组，用于接收每个客户端的执行结果
+
 	// 启动ncli个客户端goroutine
 	for cli := 0; cli < ncli; cli++ {
-		ca[cli] = make(chan bool)  // 为每个客户端创建结果通道
-		go run_client(t, cfg, cli, ca[cli], fn)  // 并发运行客户端
+		ca[cli] = make(chan bool)               // 为每个客户端创建结果通道
+		go run_client(t, cfg, cli, ca[cli], fn) // 并发运行客户端
 	}
-	
+
 	// 等待所有客户端完成
 	for cli := 0; cli < ncli; cli++ {
 		ok := <-ca[cli]  // 接收客户端执行结果
 		if ok == false { // 如果客户端执行失败
-			t.Fatalf("failure")  // 测试失败
+			t.Fatalf("failure") // 测试失败
 		}
 	}
 }
@@ -91,29 +94,29 @@ func NextValue(prev string, val string) string {
 // 参数：t - 测试对象，clnt - 客户端ID，v - 从服务器获取的完整字符串值，count - 追加操作的次数
 func checkClntAppends(t *testing.T, clnt int, v string, count int) {
 	lastoff := -1 // 记录上一个找到的元素在字符串中的位置，用于验证顺序
-	
+
 	// 遍历期望的每个追加元素
 	for j := 0; j < count; j++ {
 		// 构造期望的追加值格式："x 客户端ID j y"
 		wanted := "x " + strconv.Itoa(clnt) + " " + strconv.Itoa(j) + " y"
-		
+
 		// 查找当前期望值在结果字符串中的位置
 		off := strings.Index(v, wanted)
 		if off < 0 { // 如果没有找到期望的值
 			t.Fatalf("%v missing element %v in Append result %v", clnt, wanted, v)
 		}
-		
+
 		// 检查是否存在重复元素（通过查找最后一次出现的位置）
 		off1 := strings.LastIndex(v, wanted)
 		if off1 != off { // 如果第一次出现和最后一次出现位置不同，说明有重复
 			t.Fatalf("duplicate element %v in Append result", wanted)
 		}
-		
+
 		// 验证元素的顺序是否正确（当前元素的位置应该比上一个元素的位置大）
 		if off <= lastoff { // 如果当前元素位置小于等于上一个元素位置，说明顺序错误
 			t.Fatalf("wrong order for element %v in Append result", wanted)
 		}
-		
+
 		lastoff = off // 更新上一个元素的位置
 	}
 }
@@ -169,232 +172,233 @@ func partitioner(t *testing.T, cfg *config, ch chan bool, done *int32) {
 // 最终验证 KV 数据库的线性一致性、持久化能力和去重语义是否遭到破坏。
 //
 // 参数说明：
-//   t: 测试框架的上下文，用于报错和输出日志。
-//   part: 标记当前是哪一个 Lab (如 "3A" 基础 KV，或 "3B" 带快照)。
-//   nclients: 并发客户端的数量，用于模拟真实世界的多线程请求。
-//   unreliable: 是否开启网络不可靠（故意丢弃、重排 RPC 消息）。
-//   crash: 是否在中途触发全网集体重启（测试持久化恢复能力）。
-//   partitions: 是否在中途频繁触发网络分区（测试脑裂防御和换届正确性）。
-//   maxraftstate: Raft 日志的阈值（字节）。达到此值必须打快照；为 -1 时表示禁用快照。
+//
+//	t: 测试框架的上下文，用于报错和输出日志。
+//	part: 标记当前是哪一个 Lab (如 "3A" 基础 KV，或 "3B" 带快照)。
+//	nclients: 并发客户端的数量，用于模拟真实世界的多线程请求。
+//	unreliable: 是否开启网络不可靠（故意丢弃、重排 RPC 消息）。
+//	crash: 是否在中途触发全网集体重启（测试持久化恢复能力）。
+//	partitions: 是否在中途频繁触发网络分区（测试脑裂防御和换届正确性）。
+//	maxraftstate: Raft 日志的阈值（字节）。达到此值必须打快照；为 -1 时表示禁用快照。
 func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash bool, partitions bool, maxraftstate int) {
 
-    // ==========================================
-    // 阶段 1：构建测试标题，方便追踪日志
-    // ==========================================
-    title := "Test: "
-    if unreliable {
-        title = title + "unreliable net, " // 模拟现实网络丢包
-    }
-    if crash {
-        title = title + "restarts, " // 节点将被强制关闭后重启，考验 persistence
-    }
-    if partitions {
-        title = title + "partitions, " // 节点将被反复划分为多数派和少数派
-    }
-    if maxraftstate != -1 {
-        title = title + "snapshots, " // 考验 3B 的快照垃圾回收能力
-    }
-    if nclients > 1 {
-        title = title + "many clients" // 高压并发测试
-    } else {
-        title = title + "one client"   // 基础并发测试
-    }
-    title = title + " (" + part + ")"
+	// ==========================================
+	// 阶段 1：构建测试标题，方便追踪日志
+	// ==========================================
+	title := "Test: "
+	if unreliable {
+		title = title + "unreliable net, " // 模拟现实网络丢包
+	}
+	if crash {
+		title = title + "restarts, " // 节点将被强制关闭后重启，考验 persistence
+	}
+	if partitions {
+		title = title + "partitions, " // 节点将被反复划分为多数派和少数派
+	}
+	if maxraftstate != -1 {
+		title = title + "snapshots, " // 考验 3B 的快照垃圾回收能力
+	}
+	if nclients > 1 {
+		title = title + "many clients" // 高压并发测试
+	} else {
+		title = title + "one client" // 基础并发测试
+	}
+	title = title + " (" + part + ")"
 
-    const nservers = 5 // 标准配置：一个容错等级为 f=2 的 5 节点集群
-    
-    // 初始化集群配置，包括启动底层 5 个 Raft 实例和对应的 5 个 KVServer 实例
-    cfg := make_config(t, nservers, unreliable, maxraftstate)
-    DPrintf("make_config完成")
-    defer cfg.cleanup() // 无论测试成功与否，退出时回收所有网络端口和协程
+	const nservers = 5 // 标准配置：一个容错等级为 f=2 的 5 节点集群
 
-    cfg.begin(title) // 打印测试边界
+	// 初始化集群配置，包括启动底层 5 个 Raft 实例和对应的 5 个 KVServer 实例
+	cfg := make_config(t, nservers, unreliable, maxraftstate)
+	DPrintf("make_config完成")
+	defer cfg.cleanup() // 无论测试成功与否，退出时回收所有网络端口和协程
 
-    // 创建一个管理员客户端，主要用于测试结束时进行数据核对
-    ck := cfg.makeClient(cfg.All()) 
-    DPrintf("makeClient完成")
+	cfg.begin(title) // 打印测试边界
 
-    // ==========================================
-    // 阶段 2：准备并发控制的信号量与通道
-    // ==========================================
-    // 用于通知后台的“作妖者”（如网络分区器）和测试客户端停止运行的原子标志位
-    done_partitioner := int32(0) 
-    done_clients := int32(0)     
-    
-    ch_partitioner := make(chan bool) // 用于等待分区器彻底退出的阻塞通道
-    
-    // clnts 数组存放与每个并发客户端通信的 channel。
-    // 测试结束时，客户端会把自己成功 Append 了多少次（j）传出来，方便主协程校验数据长度。
-    clnts := make([]chan int, nclients) 
-    for i := 0; i < nclients; i++ {
-        clnts[i] = make(chan int) 
-    }
+	// 创建一个管理员客户端，主要用于测试结束时进行数据核对
+	ck := cfg.makeClient(cfg.All())
+	DPrintf("makeClient完成")
 
-    // ==========================================
-    // 阶段 3：执行 3 轮魔鬼压测（每轮逻辑相同，但环境由于上一轮的遗留会更加恶劣）
-    // ==========================================
-    for i := 0; i < 3; i++ {
-        DPrintf("第%v轮测试开始", i)
-        
-        // 每轮开始前，重置标志位，告诉协程们“开始干活了”
-        atomic.StoreInt32(&done_clients, 0)   
-        atomic.StoreInt32(&done_partitioner, 0) 
-        
-        // ==========================================
-        // 步骤 3.1：启动 nclients 个并发客户端，疯狂读写
-        // ==========================================
-        // 这里的 func 是每个客户端的业务逻辑，它们会在后台独立运行
-        go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {
-            j := 0 // j 代表该客户端成功执行了多少次 Append
-            get_num := 0
-            
-            // 当外层主协程把 done_clients 设为 1 时，本客户端循环退出，触发 defer。
-            // 将自己到底成功追加了多少个字符串告诉主协程。
-            defer func() {
-                DPrintf("spawn_clients_and_wait完成/n")
-                clnts[cli] <- j 
-            }()
-            
-            last := "" // 记录当前客户端理论上应该看到的字符串长什么样
-            key := strconv.Itoa(cli) // 专属的隔离 Key，比如客户端 0 就写 Key="0"
-            
-            // 首次写入，把自己的 Key 初始化为空字符串
-            Put(cfg, myck, key, last) 
-            DPrintf("Put完成/n")
-            
-            // 只要主线程没喊停，就疯狂发起请求
-            for atomic.LoadInt32(&done_clients) == 0 {
-                // 抛硬币决定这次是执行 Append 还是 Get
-                if (rand.Int() % 1000) < 500 { 
-                    // 50% 的概率执行 Append：生成类似 "x 0 1 y" 的增量片段
-                    nv := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y" 
-                    
-                    // 向 KV 数据库发起追加
-                    Append(cfg, myck, key, nv) 
-                    
-                    // 只有当 Append 彻底成功返回后，客户端才更新自己本地的理论期望值
-                    last = NextValue(last, nv) 
-                    j++ // 成功次数 + 1
-                    DPrintf("Append完成/n")
-                    
-                } else { 
-                    // 50% 的概率执行 Get：从系统里读数据，检查线性一致性
-                    v := Get(cfg, myck, key) 
-                    get_num++
-                    DPrintf("Get完成/n")
-                    
-                    // 🌟 强一致性要求：读出来的值，必须和本地记录的最后一次写成功的值一模一样！
-                    if v != last { 
-                        log.Fatalf("get wrong value, key %v, wanted:\n%v\n, got\n%v\n", key, last, v)
-                    }
-                }
-            }
-            DPrintf("该协程运行结束即将退出\n")
-        })
+	// ==========================================
+	// 阶段 2：准备并发控制的信号量与通道
+	// ==========================================
+	// 用于通知后台的“作妖者”（如网络分区器）和测试客户端停止运行的原子标志位
+	done_partitioner := int32(0)
+	done_clients := int32(0)
 
-        // ==========================================
-        // 步骤 3.2：开启作妖模式（网络分区）
-        // ==========================================
-        if partitions {
-            // 先让客户端安稳跑 1 秒，把数据基础打起来
-            time.Sleep(1 * time.Second)
-            // 启动网络分区器：它会在后台不停地将 5 个节点拆分成 3+2，然后愈合，然后再拆分...
-            go partitioner(t, cfg, ch_partitioner, &done_partitioner) 
-        }
-        
-        // 顶着并发请求（可能还有网络分区），整个压测持续 5 秒
-        time.Sleep(5 * time.Second)
+	ch_partitioner := make(chan bool) // 用于等待分区器彻底退出的阻塞通道
 
-        // ==========================================
-        // 步骤 3.3：下达停止指令，准备清算
-        // ==========================================
-        // 这两个原子操作会打破客户端和分区器的 for 死循环
-        atomic.StoreInt32(&done_clients, 1)     
-        atomic.StoreInt32(&done_partitioner, 1) 
-        DPrintf("已经设定退出标志")
+	// clnts 数组存放与每个并发客户端通信的 channel。
+	// 测试结束时，客户端会把自己成功 Append 了多少次（j）传出来，方便主协程校验数据长度。
+	clnts := make([]chan int, nclients)
+	for i := 0; i < nclients; i++ {
+		clnts[i] = make(chan int)
+	}
 
-        // ==========================================
-        // 步骤 3.4：清扫战场与恢复网络
-        // ==========================================
-        if partitions {
-            // 必须阻塞等待分区器彻底退出，防止干扰后续的网络重连
-            <-ch_partitioner 
-            
-            // 把所有节点的网线重新插上，让世界恢复和平
-            cfg.ConnectAll() 
-            // 休息一会儿，让集群有充足的时间完成全网选举，诞生出稳定的大一统 Leader。
-            // 这是为了防止之前在少数派里卡住的残留客户端请求因为无主而直接报错。
-            time.Sleep(electionTimeout)
-        }
+	// ==========================================
+	// 阶段 3：执行 3 轮魔鬼压测（每轮逻辑相同，但环境由于上一轮的遗留会更加恶劣）
+	// ==========================================
+	for i := 0; i < 3; i++ {
+		DPrintf("第%v轮测试开始", i)
 
-        // ==========================================
-        // 步骤 3.5：终极毁灭与重生（崩溃重启测试）
-        // ==========================================
-        if crash {
+		// 每轮开始前，重置标志位，告诉协程们“开始干活了”
+		atomic.StoreInt32(&done_clients, 0)
+		atomic.StoreInt32(&done_partitioner, 0)
+
+		// ==========================================
+		// 步骤 3.1：启动 nclients 个并发客户端，疯狂读写
+		// ==========================================
+		// 这里的 func 是每个客户端的业务逻辑，它们会在后台独立运行
+		go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {
+			j := 0 // j 代表该客户端成功执行了多少次 Append
+			get_num := 0
+
+			// 当外层主协程把 done_clients 设为 1 时，本客户端循环退出，触发 defer。
+			// 将自己到底成功追加了多少个字符串告诉主协程。
+			defer func() {
+				DPrintf("spawn_clients_and_wait完成/n")
+				clnts[cli] <- j
+			}()
+
+			last := ""               // 记录当前客户端理论上应该看到的字符串长什么样
+			key := strconv.Itoa(cli) // 专属的隔离 Key，比如客户端 0 就写 Key="0"
+
+			// 首次写入，把自己的 Key 初始化为空字符串
+			Put(cfg, myck, key, last)
+			DPrintf("Put完成/n")
+
+			// 只要主线程没喊停，就疯狂发起请求
+			for atomic.LoadInt32(&done_clients) == 0 {
+				// 抛硬币决定这次是执行 Append 还是 Get
+				if (rand.Int() % 1000) < 500 {
+					// 50% 的概率执行 Append：生成类似 "x 0 1 y" 的增量片段
+					nv := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
+
+					// 向 KV 数据库发起追加
+					Append(cfg, myck, key, nv)
+
+					// 只有当 Append 彻底成功返回后，客户端才更新自己本地的理论期望值
+					last = NextValue(last, nv)
+					j++ // 成功次数 + 1
+					DPrintf("Append完成/n")
+
+				} else {
+					// 50% 的概率执行 Get：从系统里读数据，检查线性一致性
+					v := Get(cfg, myck, key)
+					get_num++
+					DPrintf("Get完成/n")
+
+					// 🌟 强一致性要求：读出来的值，必须和本地记录的最后一次写成功的值一模一样！
+					if v != last {
+						log.Fatalf("get wrong value, key %v, wanted:\n%v\n, got\n%v\n", key, last, v)
+					}
+				}
+			}
+			DPrintf("该协程运行结束即将退出\n")
+		})
+
+		// ==========================================
+		// 步骤 3.2：开启作妖模式（网络分区）
+		// ==========================================
+		if partitions {
+			// 先让客户端安稳跑 1 秒，把数据基础打起来
+			time.Sleep(1 * time.Second)
+			// 启动网络分区器：它会在后台不停地将 5 个节点拆分成 3+2，然后愈合，然后再拆分...
+			go partitioner(t, cfg, ch_partitioner, &done_partitioner)
+		}
+
+		// 顶着并发请求（可能还有网络分区），整个压测持续 5 秒
+		time.Sleep(5 * time.Second)
+
+		// ==========================================
+		// 步骤 3.3：下达停止指令，准备清算
+		// ==========================================
+		// 这两个原子操作会打破客户端和分区器的 for 死循环
+		atomic.StoreInt32(&done_clients, 1)
+		atomic.StoreInt32(&done_partitioner, 1)
+		DPrintf("已经设定退出标志")
+
+		// ==========================================
+		// 步骤 3.4：清扫战场与恢复网络
+		// ==========================================
+		if partitions {
+			// 必须阻塞等待分区器彻底退出，防止干扰后续的网络重连
+			<-ch_partitioner
+
+			// 把所有节点的网线重新插上，让世界恢复和平
+			cfg.ConnectAll()
+			// 休息一会儿，让集群有充足的时间完成全网选举，诞生出稳定的大一统 Leader。
+			// 这是为了防止之前在少数派里卡住的残留客户端请求因为无主而直接报错。
+			time.Sleep(electionTimeout)
+		}
+
+		// ==========================================
+		// 步骤 3.5：终极毁灭与重生（崩溃重启测试）
+		// ==========================================
+		if crash {
 			DPrintf("发生crash")
-            // 瞬间切断所有节点的电源（KVServer 和 Raft 全灭，内存清空）
-            for i := 0; i < nservers; i++ {
-                cfg.ShutdownServer(i) 
-            }
-            // 等一会儿，模拟现实中服务器停机的延迟
-            time.Sleep(electionTimeout)
-            
-            // 重新上电！所有节点调用 StartKVServer 和 Make 重新启动。
-            // 此时它们必须从本地快照或 Raft 日志中完美复现出崩溃前的内存状态。
-            for i := 0; i < nservers; i++ {
-                cfg.StartServer(i) 
-            }
-            cfg.ConnectAll() 
-        }
+			// 瞬间切断所有节点的电源（KVServer 和 Raft 全灭，内存清空）
+			for i := 0; i < nservers; i++ {
+				cfg.ShutdownServer(i)
+			}
+			// 等一会儿，模拟现实中服务器停机的延迟
+			time.Sleep(electionTimeout)
 
-        // ==========================================
-        // 步骤 3.6：大清算（最终一致性核对）
-        // ==========================================
-        DPrintf("wait for clients\n")
-        
-        for i := 0; i < nclients; i++ {
-            DPrintf("从通道获取客户端操作计数卡住\n")
-            
-            // 阻塞等待每个客户端退出，并接收它在经历大风大浪后，到底成功了多少次 (j)
-            j := <-clnts[i] 
-            DPrintf("从通道获取客户端操作计数完成\n")
-            
-            key := strconv.Itoa(i) 
-            DPrintf("Check-key %v \n", key)
-            
-            // 使用上帝视角的管理员客户端，去刚刚恢复好的数据库里把最终字符串拔出来
-            v := Get(cfg, ck, key) 
-            
-            // 🌟 终极检验：
-            // checkClntAppends 会根据客户端传入的 j（成功次数），去检查字符串 v。
-            // 比如 j=5，系统必须有且仅有 "x i 0 y", "x i 1 y" ... 到 "x i 4 y"。
-            // 少一个（missing）、多一个（duplicate）、顺序乱了（wrong order），直接判零分！
-            checkClntAppends(t, i, v, j) 
-        }
-        DPrintf("wait for clients 完成\n")
+			// 重新上电！所有节点调用 StartKVServer 和 Make 重新启动。
+			// 此时它们必须从本地快照或 Raft 日志中完美复现出崩溃前的内存状态。
+			for i := 0; i < nservers; i++ {
+				cfg.StartServer(i)
+			}
+			cfg.ConnectAll()
+		}
 
-        // ==========================================
-        // 步骤 3.7：空间容量检查（针对 3B 的快照约束）
-        // ==========================================
-        if maxraftstate > 0 {
-            // 此时所有请求已处理完毕，KVServer 理应已经向 Raft 发起了截断请求。
-            sz := cfg.LogSize() // 去测算磁盘上残留的 Raft 状态大小
-            if sz > 8*maxraftstate { 
-                // 如果超出了阈值的 8 倍，说明快照垃圾回收完全失效，判为失败
-                t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
-            }
-        }
-        
-        // 针对 3A（禁止快照）：检查系统有没有自作多情地生成了快照文件
-        if maxraftstate < 0 {
-            ssz := cfg.SnapshotSize() 
-            if ssz > 0 { 
-                t.Fatalf("snapshot too large (%v), should not be used when maxraftstate = %d", ssz, maxraftstate)
-            }
-        }
-    }
+		// ==========================================
+		// 步骤 3.6：大清算（最终一致性核对）
+		// ==========================================
+		DPrintf("wait for clients\n")
 
-    cfg.end() // 测试完美结束，撒花！
+		for i := 0; i < nclients; i++ {
+			DPrintf("从通道获取客户端操作计数卡住\n")
+
+			// 阻塞等待每个客户端退出，并接收它在经历大风大浪后，到底成功了多少次 (j)
+			j := <-clnts[i]
+			DPrintf("从通道获取客户端操作计数完成\n")
+
+			key := strconv.Itoa(i)
+			DPrintf("Check-key %v \n", key)
+
+			// 使用上帝视角的管理员客户端，去刚刚恢复好的数据库里把最终字符串拔出来
+			v := Get(cfg, ck, key)
+
+			// 🌟 终极检验：
+			// checkClntAppends 会根据客户端传入的 j（成功次数），去检查字符串 v。
+			// 比如 j=5，系统必须有且仅有 "x i 0 y", "x i 1 y" ... 到 "x i 4 y"。
+			// 少一个（missing）、多一个（duplicate）、顺序乱了（wrong order），直接判零分！
+			checkClntAppends(t, i, v, j)
+		}
+		DPrintf("wait for clients 完成\n")
+
+		// ==========================================
+		// 步骤 3.7：空间容量检查（针对 3B 的快照约束）
+		// ==========================================
+		if maxraftstate > 0 {
+			// 此时所有请求已处理完毕，KVServer 理应已经向 Raft 发起了截断请求。
+			sz := cfg.LogSize() // 去测算磁盘上残留的 Raft 状态大小
+			if sz > 8*maxraftstate {
+				// 如果超出了阈值的 8 倍，说明快照垃圾回收完全失效，判为失败
+				t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
+			}
+		}
+
+		// 针对 3A（禁止快照）：检查系统有没有自作多情地生成了快照文件
+		if maxraftstate < 0 {
+			ssz := cfg.SnapshotSize()
+			if ssz > 0 {
+				t.Fatalf("snapshot too large (%v), should not be used when maxraftstate = %d", ssz, maxraftstate)
+			}
+		}
+	}
+
+	cfg.end() // 测试完美结束，撒花！
 }
 
 // similar to GenericTest, but with clients doing random operations (and using a
@@ -592,8 +596,8 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 // 	Put(cfg, ck, "k", "")
 
 // 	// 定义并发客户端数量和每个客户端的 Append 操作次数
-// 	const nclient = 5   // 启动 5 个并发客户端
-// 	const upto = 10     // 每个客户端执行 10 次 Append
+// 	const nclient = 5 // 启动 5 个并发客户端
+// 	const upto = 10   // 每个客户端执行 10 次 Append
 
 // 	// 启动 nclient 个并发客户端 goroutine，并等待它们全部完成
 // 	spawn_clients_and_wait(t, cfg, nclient, func(me int, myck *Clerk, t *testing.T) {
@@ -626,17 +630,17 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 // 	cfg.end()
 // }
 
-// // Submit a request in the minority partition and check that the requests
-// // doesn't go through until the partition heals.  The leader in the original
-// // network ends up in the minority partition.
-// // TestOnePartition3A 测试在网络分区（network partition）场景下，
-// // Raft 集群的多数派（majority）能否继续提供服务，而少数派（minority）是否被正确阻塞，
-// // 以及在分区恢复后系统能否恢复正常并保证一致性（属于 Lab 3A 的核心容错测试）。
+// // // Submit a request in the minority partition and check that the requests
+// // // doesn't go through until the partition heals.  The leader in the original
+// // // network ends up in the minority partition.
+// // // TestOnePartition3A 测试在网络分区（network partition）场景下，
+// // // Raft 集群的多数派（majority）能否继续提供服务，而少数派（minority）是否被正确阻塞，
+// // // 以及在分区恢复后系统能否恢复正常并保证一致性（属于 Lab 3A 的核心容错测试）。
 // func TestOnePartition3A(t *testing.T) {
 // 	// 启动一个包含 5 个节点的 Raft 集群（奇数节点便于划分为多数/少数）
 // 	const nservers = 5
 // 	cfg := make_config(t, nservers, false, -1) // 不启用不可靠网络（unreliable=false），不启用快照
-// 	defer cfg.cleanup()                         // 测试结束自动清理资源
+// 	defer cfg.cleanup()                        // 测试结束自动清理资源
 
 // 	// 创建一个全局客户端，可连接任意节点
 // 	ck := cfg.makeClient(cfg.All())
@@ -654,9 +658,9 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 // 	cfg.partition(p1, p2) // 实施网络隔离，p1 和 p2 之间无法通信
 
 // 	// 为每个分区创建专用客户端：
-// 	ckp1 := cfg.makeClient(p1)   // 仅连接 p1（多数派）
-// 	ckp2a := cfg.makeClient(p2)  // 仅连接 p2（少数派）
-// 	ckp2b := cfg.makeClient(p2)  // 另一个连接 p2 的客户端（用于并发测试）
+// 	ckp1 := cfg.makeClient(p1)  // 仅连接 p1（多数派）
+// 	ckp2a := cfg.makeClient(p2) // 仅连接 p2（少数派）
+// 	ckp2b := cfg.makeClient(p2) // 另一个连接 p2 的客户端（用于并发测试）
 
 // 	// 通过多数派客户端写入新值 "14"
 // 	Put(cfg, ckp1, "1", "14")
@@ -743,7 +747,7 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 // 	// 会携带相同的 ClientID 和 SeqNum，因此 Put("15") 会被去重或按序执行。
 // 	//
 // 	// 不过，根据原始 6.824 测试逻辑，此处 **预期最终值为 "15"**，
-// 	// 意味着 Put("15") 在恢复后成功提交，且覆盖了 "16" —— 
+// 	// 意味着 Put("15") 在恢复后成功提交，且覆盖了 "16" ——
 // 	// 这通常是因为 Put("16") 虽然在多数派成功，但在后续 leader 切换中，
 // 	// 若新 leader 来自包含 Put("15") 请求的路径（且其日志 term 更高），
 // 	// 可能导致 "16" 被回滚（这是 Raft 允许的，只要未提交到状态机）。
@@ -776,6 +780,7 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 // 	GenericTest(t, "3A", 5, false, false, true, -1)
 // }
 
+// // --------------------------------------------
 // func TestPersistOneClient3A(t *testing.T) {
 // 	// Test: restarts, one client (3A) ...
 // 	GenericTest(t, "3A", 1, false, true, false, -1)
@@ -800,8 +805,165 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 // 	// Test: unreliable net, restarts, partitions, many clients (3A) ...
 // 	GenericTest(t, "3A", 5, true, true, true, -1)
 // }
-//last
-func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
-	// Test: unreliable net, restarts, partitions, linearizability checks (3A) ...
-	GenericTestLinearizability(t, "3A", 15, 7, true, true, true, -1)
+
+// // last
+// func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
+// 	// Test: unreliable net, restarts, partitions, linearizability checks (3A) ...
+// 	GenericTestLinearizability(t, "3A", 15, 7, true, true, true, -1)
+// }
+
+
+//------------
+
+//
+// if one server falls behind, then rejoins, does it
+// recover by using the InstallSnapshot RPC?
+// also checks that majority discards committed log entries
+// even if minority doesn't respond.
+//
+func TestSnapshotRPC3B(t *testing.T) {
+	const nservers = 3
+	// 设定 maxraftstate 为 1000 字节。
+	// 当你的 kvserver 检测到 Raft 状态大小逼近或超过 1000 字节时，
+	// 必须强制打快照并截断 Raft 日志。
+	maxraftstate := 1000 
+	cfg := make_config(t, nservers, false, maxraftstate)
+	defer cfg.cleanup()
+
+	// 创建一个可以向所有节点发请求的客户端
+	ck := cfg.makeClient(cfg.All())
+
+	cfg.begin("Test: InstallSnapshot RPC (3B)")
+
+	// 1. 初始状态写入：向系统中写入一对基础数据 a=A，确保集群正常启动并能处理请求。
+	Put(cfg, ck, "a", "A")
+	check(cfg, t, ck, "a", "A")
+
+	// 2. 制造网络分区 (Network Partition)
+	// 将节点 0 和 1 放在一个分区（多数派），将节点 2 孤立在另一个分区（少数派）。
+	// 节点 2 此时无法接收到任何新的日志，它“落后”了。
+	cfg.partition([]int{0, 1}, []int{2})
+	{
+		// 创建一个只能连接多数派 (节点 0 和 1) 的客户端
+		ck1 := cfg.makeClient([]int{0, 1})
+		
+		// 疯狂向多数派写入 50 条数据。
+		// 目的：这 50 条日志的字节数加起来肯定会超过 maxraftstate (1000 字节)。
+		// 这将强制节点 0 和 1 触发打快照 (Snapshot) 逻辑，并丢弃掉旧的 Raft 日志。
+		for i := 0; i < 50; i++ {
+			Put(cfg, ck1, strconv.Itoa(i), strconv.Itoa(i))
+		}
+		time.Sleep(electionTimeout)
+		Put(cfg, ck1, "b", "B")
+	}
+
+	// 3. 检查日志截断机制是否生效
+	// sz 获取当前集群底层 Raft 持久化状态的总体积。
+	sz := cfg.LogSize()
+	// 如果体积过大，说明你的 kvserver 没检测大小，或者 Raft 没有真正丢弃日志。
+	// 8 * maxraftstate 是一个宽容的上限值，超过这个值说明一定发生内存泄漏或没剪裁。
+	if sz > 8*maxraftstate {
+		t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
+	}
+
+	// 4. 重新划分网络分区，强迫落后的节点 2 参与共识
+	// 将节点 0 和 2 组成多数派，节点 1 变成少数派。
+	// 由于节点 2 断线了很久，没有 0 到 49 以及 b=B 的日志。
+	// 此时 0 必须成为 Leader (因为 2 日志太旧选不上)，而 0 想要提交新日志，就必须复制给 2。
+	cfg.partition([]int{0, 2}, []int{1})
+	{
+		// 创建只能连接节点 0 和 2 的客户端
+		ck1 := cfg.makeClient([]int{0, 2})
+		
+		// 写入新数据。为了让 c=C 提交成功，Leader(节点0) 必须与 Follower(节点2) 同步。
+		// 关键点：此时 0 检查发给 2 的 nextIndex，发现自己需要的那些旧日志已经被 Snapshot 删了！
+		// 于是，节点 0 必须向节点 2 发送 InstallSnapshot RPC。
+		Put(cfg, ck1, "c", "C")
+		Put(cfg, ck1, "d", "D")
+		
+		// 检查落后的节点 2 是否成功通过快照恢复了状态。
+		// 如果它没有成功处理 InstallSnapshot 并把它交给底层的 kvserver，
+		// 下面的 check 读取旧数据 (a, b, 1, 49) 就会失败。
+		check(cfg, t, ck1, "a", "A")
+		check(cfg, t, ck1, "b", "B")
+		check(cfg, t, ck1, "1", "1")
+		check(cfg, t, ck1, "49", "49")
+	}
+
+	// 5. 网络恢复
+	// 将所有节点 (0, 1, 2) 重新连通。
+	cfg.partition([]int{0, 1, 2}, []int{})
+
+	// 写入并校验最终状态，确保整个集群在此剧烈变动后仍能正常提供服务。
+	Put(cfg, ck, "e", "E")
+	check(cfg, t, ck, "c", "C")
+	check(cfg, t, ck, "e", "E")
+	check(cfg, t, ck, "1", "1")
+
+	cfg.end()
 }
+
+// // are the snapshots not too huge? 500 bytes is a generous bound for the
+// // operations we're doing here.
+// func TestSnapshotSize3B(t *testing.T) {
+// 	const nservers = 3
+// 	maxraftstate := 1000
+// 	maxsnapshotstate := 500
+// 	cfg := make_config(t, nservers, false, maxraftstate)
+// 	defer cfg.cleanup()
+
+// 	ck := cfg.makeClient(cfg.All())
+
+// 	cfg.begin("Test: snapshot size is reasonable (3B)")
+
+// 	for i := 0; i < 200; i++ {
+// 		Put(cfg, ck, "x", "0")
+// 		check(cfg, t, ck, "x", "0")
+// 		Put(cfg, ck, "x", "1")
+// 		check(cfg, t, ck, "x", "1")
+// 	}
+
+// 	// check that servers have thrown away most of their log entries
+// 	sz := cfg.LogSize()
+// 	if sz > 8*maxraftstate {
+// 		t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
+// 	}
+
+// 	// check that the snapshots are not unreasonably large
+// 	ssz := cfg.SnapshotSize()
+// 	if ssz > maxsnapshotstate {
+// 		t.Fatalf("snapshot too large (%v > %v)", ssz, maxsnapshotstate)
+// 	}
+
+// 	cfg.end()
+// }
+
+// func TestSnapshotRecover3B(t *testing.T) {
+// 	// Test: restarts, snapshots, one client (3B) ...
+// 	GenericTest(t, "3B", 1, false, true, false, 1000)
+// }
+
+// func TestSnapshotRecoverManyClients3B(t *testing.T) {
+// 	// Test: restarts, snapshots, many clients (3B) ...
+// 	GenericTest(t, "3B", 20, false, true, false, 1000)
+// }
+
+// func TestSnapshotUnreliable3B(t *testing.T) {
+// 	// Test: unreliable net, snapshots, many clients (3B) ...
+// 	GenericTest(t, "3B", 5, true, false, false, 1000)
+// }
+
+// func TestSnapshotUnreliableRecover3B(t *testing.T) {
+// 	// Test: unreliable net, restarts, snapshots, many clients (3B) ...
+// 	GenericTest(t, "3B", 5, true, true, false, 1000)
+// }
+
+// func TestSnapshotUnreliableRecoverConcurrentPartition3B(t *testing.T) {
+// 	// Test: unreliable net, restarts, partitions, snapshots, many clients (3B) ...
+// 	GenericTest(t, "3B", 5, true, true, true, 1000)
+// }
+
+// func TestSnapshotUnreliableRecoverConcurrentPartitionLinearizable3B(t *testing.T) {
+// 	// Test: unreliable net, restarts, partitions, snapshots, linearizability checks (3B) ...
+// 	GenericTestLinearizability(t, "3B", 15, 7, true, true, true, 1000)
+// }

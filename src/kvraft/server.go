@@ -1,7 +1,8 @@
 package kvraft
 
 import (
-	//"encoding/gob"
+    "bytes"
+	"encoding/gob"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -12,7 +13,7 @@ import (
 	"../raft"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -54,44 +55,79 @@ type KVServer struct {
 	RealServer map[int64]int
 	// 🌟 新增：每个日志 index 对应一个通知 channel，用于通知 RPC 协程日志已提交
     notifyChs      map[int]chan Op
+    lastSnapshotIndex    int
+    persister *raft.Persister
+}
+
+func (kv *KVServer) makeSnapshotLocked() []byte {
+    DPrintf("开始创建快照\n")
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+
+	e.Encode(kv.kvstore)
+	e.Encode(kv.CommittedStore)
+	e.Encode(kv.RealServer)
+
+	return w.Bytes()
+}
+
+func (kv *KVServer) readSnapshot(snapshot []byte) {
+	if snapshot == nil || len(snapshot) == 0 {
+		return
+	}
+    DPrintf("开始应用和读取快照\n")
+
+	r := bytes.NewBuffer(snapshot)
+	d := gob.NewDecoder(r)
+
+	var kvstore map[string]string
+	var committedStore map[int64]int
+	var realServer map[int64]int
+
+	if d.Decode(&kvstore) != nil ||
+		d.Decode(&committedStore) != nil ||
+		d.Decode(&realServer) != nil {
+		DPrintf("server %v failed to decode snapshot", kv.me)
+		return
+	}
+
+	kv.kvstore = kvstore
+	kv.CommittedStore = committedStore
+	kv.RealServer = realServer
 }
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
     // ==========================================
-    // 阶段 1：初始化操作并提交给底层的 Raft
+    // 阶段 1 & 2：用一把大锁覆盖打包、Start 和注册通道
     // ==========================================
-    kv.mu.Lock()
+    kv.mu.Lock() 
     
-    RaftOp := new(Op)
-    RaftOp.Key = args.Key
-    RaftOp.Op = "Get"
-    RaftOp.Pos = args.RealPos           // 🌟 记录该请求的唯一序列号
-    RaftOp.Commiter = args.Commiter // 🌟 记录客户端的唯一ID，用于最后的位置校验
-    
+    RaftOp := Op{
+        Key:      args.Key,
+        Op:       "Get",
+        Pos:      args.RealPos,   // 记录该请求的唯一序列号
+        Commiter: args.Commiter,  // 记录客户端的唯一ID
+    }
     kv.RealServer[args.Commiter] = args.RealPos
-    kv.mu.Unlock()
 
-    // 将 Get 操作作为一个日志提案扔给 Raft。
-    // 在分布式线性一致性要求下，读操作同样需要经历 Raft 共识确认，以防止读到过期的 Leader。
-    index, _, isLeader := kv.rf.Start(*RaftOp)
+    // 在锁的保护下，将提案扔给 Raft
+    index, _, isLeader := kv.rf.Start(RaftOp)
     
     if !isLeader {
         reply.Err = ErrWrongLeader
+        kv.mu.Unlock() // 失败，安全放锁
         return
     }
 
-    // ==========================================
-    // 阶段 2：创建专属通道，精准阻塞等待
-    // ==========================================
-    kv.mu.Lock()
-    // 为当前的日志 index 创建一个私有的通知通道
+    // 🌟 彻底消灭时序黑洞：Start 刚结束，立刻创建并挂载通道
     ch := make(chan Op, 1)
     kv.notifyChs[index] = ch
+    
+    // 流程走完，安全释放大锁，让出 CPU
     kv.mu.Unlock()
 
-    // 【内存防泄漏】无论该 RPC 最终是成功、超时还是由于中途节点换届失败，
-    // 退出函数时必须从 map 中将这个通道删除，否则伴随大量请求，内存会发生 OOM（溢出崩溃）。
+    // 内存防泄漏：退出时务必清理
     defer func() {
         kv.mu.Lock()
         delete(kv.notifyChs, index)
@@ -99,37 +135,33 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
     }()
 
     // ==========================================
-    // 阶段 3：等待状态机唤醒并读取数据
+    // 阶段 3：精准阻塞等待状态机唤醒
     // ==========================================
     select {
     case appliedOp := <-ch:
-        // 🌟 【核心安全性校验】
-        // 检查从状态机里被应用出来的操作，是不是我们当时发过去的那个客户端的那个请求。
-        // 如果是，说明直到该日志被应用的那一刻，我们依然是全网合法的 Leader，当前数据是最新的。
+        // 🌟 核心安全性校验
         if appliedOp.Commiter == RaftOp.Commiter && appliedOp.Pos == RaftOp.Pos {
             kv.mu.Lock()
             
-            // 从当前的内存数据库中读取最新值
+            // 从状态机中读取最新值
             val, exists := kv.kvstore[args.Key]
             if exists {
                 reply.Value = val
-                reply.Err = OK
             } else {
-                reply.Value = ""
-                reply.Err = ErrNoKey // 如果 key 不存在，返回特定错误码
+                reply.Value = "" // 不存在的 Key，返回空字符串
             }
+            
+            // 🌟 核心修复：无论存不存在，都给客户端返回 OK，防止客户端死循环重试！
+            reply.Err = OK 
             
             kv.mu.Unlock()
         } else {
-            // 如果 Commiter 或 Pos 对不上，说明在我们排队期间，当前节点发生过分区或任期更替，
-            // 该 index 上的日志被新 Leader 用其他写请求“鸠占鹊巢”覆盖了，当前节点已不再是合法 Leader。
+            // 被其他日志“鸠占鹊巢”
             reply.Err = ErrWrongLeader
         }
         
     case <-time.After(500 * time.Millisecond):
-        // 🌟 【防死锁超时机制】
-        // 如果遭遇网络分区，Raft 迟迟无法达成多数派，该 index 永远不会被 Apply。
-        // 设置 500ms 超时，及时放客户端去其他可用的 Leader 节点重试。
+        // 🌟 防死锁超时机制
         reply.Err = ErrWrongLeader
     }
 }
@@ -251,6 +283,17 @@ func (kv *KVServer) Apply() {
                 kv.CommittedStore[op.Commiter] = op.Pos
                 DPrintf("kv.kvstore[%v]Append之后为：%v", op.Key, kv.kvstore[op.Key])
             }
+            if kv.maxraftstate != -1 &&
+            kv.rf.RaftStateSize() >= kv.maxraftstate*9/10 { 
+                snapshot := kv.makeSnapshotLocked()
+                snapshotIndex := applyMsg.CommandIndex
+                kv.lastSnapshotIndex = snapshotIndex
+
+                // 最好不要在 kv.mu 内调用 Raft.Snapshot()
+                kv.mu.Unlock()
+                kv.rf.Snapshot(snapshotIndex, snapshot)
+                kv.mu.Lock()
+            }
             
             // 4. 【核心融合点：精准通知】
             // 无论是 Put, Append 还是 Get，只要完成了上面的状态更新（或确认），
@@ -312,9 +355,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
     // ==========================================
     // 创建应用消息通道，带缓冲（这里设为 1500）能有效防止 Raft 层和 KVServer 层因并发产生死锁
     kv.applyCh = make(chan raft.ApplyMsg, 1500) 
+    kv.readSnapshot(persister.ReadSnapshot())
     
     // 启动底层的 Raft 节点，并将统一的 applyCh 传递给它
-    kv.rf = raft.Make(servers, me, persister, kv.applyCh) 
+    kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+    kv.persister=persister 
 
     // ==========================================
     // 启动后台长驻协程
