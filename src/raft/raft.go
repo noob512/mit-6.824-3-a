@@ -78,15 +78,16 @@ type Raft struct {
 	matchIndex  []int // 每个追随者已复制的最高日志条目的索引（初始为 0）
 	state       int   // 节点当前的角色（Follower、Candidate、Leader）
 	//lastLogIndex    int                 //	最后一条日志的索引
-	lastMessageTime   time.Time     // 上次收到消息的时间（用于选举超时）
-	ElectionTimeout   time.Duration // 选举超时时间（随机值，用于触发选举）
-	turnToLeader      int           //控制initleader只在转换为leader时进行
-	applyCh           chan ApplyMsg //用于向上层提交命令
-	MaxnilNum         int           //最大空白命令，用于用户在向主机提交日志时，返回正确的索引
-	CurnilNum         int           //当前空白命令，用于主机向上层提交日志时确定真实索引
-	commitCond        *sync.Cond
-	lastIncludedIndex int
-	lastIncludedTerm  int
+	lastMessageTime         time.Time     // 上次收到消息的时间（用于选举超时）
+	ElectionTimeout         time.Duration // 选举超时时间（随机值，用于触发选举）
+	turnToLeader            int           //控制initleader只在转换为leader时进行
+	applyCh                 chan ApplyMsg //用于向上层提交命令
+	MaxnilNum               int           //最大空白命令，用于用户在向主机提交日志时，返回正确的索引
+	CurnilNum               int           //当前空白命令，用于主机向上层提交日志时确定真实索引
+	commitCond              *sync.Cond
+	lastIncludedIndex       int
+	lastIncludedTerm        int
+	lastIncludedPublicIndex int
 	// 待实现的状态（对应论文图 2）
 	// 2A 阶段：需要添加与 leader 选举相关的状态（如当前任期、角色、投票记录等）
 	// 2B 阶段：添加日志相关状态（日志条目数组、提交索引等）
@@ -114,6 +115,91 @@ func (rf *Raft) termAt(index int) int {
 		return rf.lastIncludedTerm
 	}
 	return rf.logs[index-rf.lastIncludedIndex].Term
+}
+
+// realToPublicIndex 用于将 Raft 内部的全局“真实”日志索引 (real) 
+// 转换为对外（状态机或客户端）可见的“公共”日志索引 (public)。
+func (rf *Raft) realToPublicIndex(real int) int {
+	// 1. 获取基准索引：将 public 初始值设为快照中最后包含的公共索引。
+	// lastIncludedPublicIndex 记录的是发生日志压缩（打快照）前，状态机最后一次应用的有效命令索引。
+	public := rf.lastIncludedPublicIndex 
+	
+	// 2. 遍历当前保留在内存中的日志条目（即尚未被压缩进快照的日志）。
+	// offset 从 1 开始，因为在实现了快照的 Raft 中，rf.logs[0] 通常作为哨兵/占位符（Dummy Entry），
+	// 用来保存上一次快照的元数据（如 lastIncludedIndex 和 lastIncludedTerm）。
+	for offset := 1; offset < len(rf.logs); offset++ {
+		
+		// 3. 判断是否为有效命令日志：
+		// 如果 Cmd 不为 nil，说明这是一条真实的客户端请求命令，
+		// 而不是 Raft 内部生成的控制日志（比如 Leader 刚上任时为了提交之前任期的日志而追加的 no-op 空日志）。
+		if rf.logs[offset].Cmd != nil {
+			public++ // 只有遇到有效的客户端命令时，对外可见的公共索引才加 1
+		}
+		
+		// 4. 匹配目标真实索引：
+		// rf.lastIncludedIndex + offset 计算的是当前遍历到的日志在整个 Raft 历史中的“全局绝对真实索引”。
+		// 如果计算出的绝对索引等于我们要查找的目标 real 索引，则代表找到了。
+		if rf.lastIncludedIndex+offset == real {
+			return public // 返回累加计算得到的公共索引
+		}
+	}
+	
+	// 5. 兜底返回：
+	// 如果遍历完了当前内存中的所有日志都没有命中 target (可能是 real 值越界或者错误)，
+	// 则返回当前能计算出的最大 public 索引。
+	return public
+}
+
+// publicToRealIndex 用于将对外可见的公共索引 (publicIndex) 
+// 映射回 Raft 内部的真实物理全局索引 (realIndex)。
+// 返回值：
+// int: 转换后的真实全局索引。如果未找到或已过期，通常返回 -1。
+// bool: 是否成功在当前保留的日志（或快照边界）中找到了该索引。
+func (rf *Raft) publicToRealIndex(publicIndex int) (int, bool) {
+	
+	// 1. 检查快照边界与已清理的日志
+	// 如果请求的 publicIndex 小于或等于快照最后包含的公共索引，
+	// 说明该日志要么正好是快照的最后一个条目，要么已经被压缩丢弃了。
+	if publicIndex <= rf.lastIncludedPublicIndex {
+		// 1.1 精准命中快照边界：
+		// 如果正好等于快照的最后一条记录的公共索引，
+		// 直接返回快照对应的真实全局索引 (lastIncludedIndex)。
+		if publicIndex == rf.lastIncludedPublicIndex {
+			return rf.lastIncludedIndex, true
+		}
+		// 1.2 日志已被压缩（丢弃）：
+		// 请求的公共索引比快照边界还小，说明对应日志早被清理了，
+		// 内存中无法查到，返回 -1 和 false。
+		return -1, false
+	}
+	
+	// 2. 准备遍历内存中的活跃日志
+	// 基准索引：从快照最后包含的公共索引开始累加
+	public := rf.lastIncludedPublicIndex
+	
+	// 遍历当前内存日志，offset=1 同样是因为 logs[0] 是辅助打快照的占位符（Dummy Entry）
+	for offset := 1; offset < len(rf.logs); offset++ {
+		
+		// 3. 过滤出真实的客户端请求
+		// 只有遇到非空的客户端命令时，公共索引 public 才加 1。
+		// Raft 内部的空操作（No-op）会被跳过，不计入 public 索引。
+		if rf.logs[offset].Cmd != nil {
+			public++
+			
+			// 4. 匹配目标公共索引
+			// 累加后，如果当前的 public 正好等于我们要找的 publicIndex，
+			// 说明找到了对应的日志条目。
+			if public == publicIndex {
+				// 返回计算得出的绝对真实索引 (被截断的日志数量 + 当前数组偏移量)
+				return rf.lastIncludedIndex + offset, true
+			}
+		}
+	}
+	
+	// 5. 越界或未找到
+	// 如果遍历完所有的内存日志都没有找到，说明该 publicIndex 超出了当前 Raft 节点已知的日志范围
+	// （例如，客户端查询了一个还没被生成的未来索引）。
+	return -1, false
 }
 
 // func (rf *Raft) persistData() []byte {
@@ -151,6 +237,7 @@ func (rf *Raft) persistData() []byte {
 	e.Encode(rf.logs)
 	e.Encode(rf.lastIncludedIndex)
 	e.Encode(rf.lastIncludedTerm)
+	e.Encode(rf.lastIncludedPublicIndex)
 
 	return w.Bytes()
 }
@@ -170,15 +257,21 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// 加锁保护 Raft 的内部状态，防止与其他 RPC (如 AppendEntries) 并发冲突
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	realIndex, ok := rf.publicToRealIndex(index)
+	if !ok {
+		DPrintf("主机：%d 创建快照中止 | public index (%d) 无法映射到真实日志\n",
+			rf.me, index)
+		return
+	}
 
 	// 打印修改前的初始状态：机器 ID、请求截断的 index、当前的快照 index 以及完整的旧日志数组
-	DPrintf("主机：%d 创建快照启动 | 目标 index: %d | 当前 lastIncludedIndex: %d | 旧日志状态: %+v\n",
-		rf.me, index, rf.lastIncludedIndex, rf.logs)
+	DPrintf("主机：%d 创建快照启动 | 目标 public index: %d | 目标 real index: %d | 当前 lastIncludedIndex: %d | 旧日志状态: %+v\n",
+		rf.me, index, realIndex, rf.lastIncludedIndex, rf.logs)
 
 	// 【防御性编程 1：过期请求拦截】
-	if index <= rf.lastIncludedIndex {
-		DPrintf("主机：%d 创建快照中止 | 传入的 index (%d) 已过期 (<= %d)\n",
-			rf.me, index, rf.lastIncludedIndex)
+	if realIndex <= rf.lastIncludedIndex {
+		DPrintf("主机：%d 创建快照中止 | 传入的 real index (%d) 已过期 (<= %d)\n",
+			rf.me, realIndex, rf.lastIncludedIndex)
 		return
 	}
 
@@ -188,36 +281,42 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// }
 
 	// 获取将要成为快照最后一条记录的 Term (任期)。
-	term := rf.termAt(index)
+	term := rf.termAt(realIndex)
 
 	// 【核心逻辑 1：创建新的切片，避免内存泄漏】
 	newLog := make([]one_log, 0)
+	newCommitted := make([]bool, 0)
 
 	// 【核心逻辑 2：设置“哨兵”/“虚拟”节点】
 	newLog = append(newLog, one_log{
 		Term: term,
 	})
+	newCommitted = append(newCommitted, true)
 	DPrintf("主机：%d 刚创建的一条日志为: %+v\n",
 		rf.me, newLog)
 
 	// 【核心逻辑 3：拷贝保留的尾部日志】
-	if index < rf.lastLogIndex() {
+	if realIndex < rf.lastLogIndex() {
 		// 计算这个绝对 index 在当前尚未被替换的 rf.log 数组中的相对下标 (offset)
-		offset := index - rf.lastIncludedIndex
+		offset := realIndex - rf.lastIncludedIndex
 
 		// 采用 append + nil 初始化技巧进行【深度拷贝】。
 		tail := append([]one_log(nil), rf.logs[offset+1:]...)
 		newLog = append(newLog, tail...)
+		committedTail := append([]bool(nil), rf.committed[offset+1:offset+1+len(tail)]...)
+		newCommitted = append(newCommitted, committedTail...)
 	}
 
 	// 【状态更新】
 	rf.logs = newLog
-	rf.lastIncludedIndex = index
+	rf.committed = newCommitted
+	rf.lastIncludedIndex = realIndex
 	rf.lastIncludedTerm = term
+	rf.lastIncludedPublicIndex = index
 
 	// 打印修改后的最终状态：更新后的快照 index、Term 以及裁剪后的新日志数组
-	DPrintf("主机：%d 创建快照完成 | 新 lastIncludedIndex: %d | 新 lastIncludedTerm: %d | 新日志状态: %+v\n",
-		rf.me, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.logs)
+	DPrintf("主机：%d 创建快照完成 | 新 lastIncludedIndex: %d | 新 lastIncludedPublicIndex: %d | 新 lastIncludedTerm: %d | 新日志状态: %+v\n",
+		rf.me, rf.lastIncludedIndex, rf.lastIncludedPublicIndex, rf.lastIncludedTerm, rf.logs)
 
 	// 【持久化：原子写入】
 	rf.persistWithSnapshot(snapshot)
@@ -319,6 +418,9 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var logs []one_log // 注意这里必须对应你底层使用的日志存储结构类型
+	var lastIncludedIndex int
+	var lastIncludedTerm int
+	var lastIncludedPublicIndex int
 
 	// ❌ 删除了 var committed []bool，严禁将提交状态落盘！
 
@@ -326,7 +428,10 @@ func (rf *Raft) readPersist(data []byte) {
 	// 必须和 persist() 函数里 e.Encode() 的顺序严格一致！
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
-		d.Decode(&logs) != nil {
+		d.Decode(&logs) != nil ||
+		d.Decode(&lastIncludedIndex) != nil ||
+		d.Decode(&lastIncludedTerm) != nil ||
+		d.Decode(&lastIncludedPublicIndex) != nil {
 
 		DPrintf("Error decoding Raft state")
 	} else {
@@ -334,6 +439,9 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.logs = logs
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
+		rf.lastIncludedPublicIndex = lastIncludedPublicIndex
 
 		// 7. 更新辅助索引
 		//rf.lastLogIndex = len(rf.logs)
@@ -344,7 +452,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.committed = make([]bool, len(rf.logs)+1000)
 
 		DPrintf("节点 %d 成功恢复状态：Term=%d, LogLen=%d, VotedFor=%d",
-			rf.me, rf.currentTerm, rf.lastLogIndex, rf.votedFor)
+			rf.me, rf.currentTerm, rf.lastLogIndex(), rf.votedFor)
 	}
 }
 
@@ -369,15 +477,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 		return index, term, isLeader
 	}
-	index = len(rf.logs)
+	index = rf.lastLogIndex() + 1
 	term = rf.currentTerm
 	rf.logs = append(rf.logs, one_log{Cmd: command, Term: term, Index: index, Committed: false})
 	rf.committed = append(rf.committed, false)
+	publicIndex := rf.realToPublicIndex(index)
 	DPrintf("主机：%d是leader,日志增加完成,日志内容为：%v\n", rf.me, rf.logs)
 	//log.Printf("主机：%d是leader,日志增加完成,日志内容为：%v\n", rf.me,rf.logs)
 	rf.persist()
 	//DPrintf("主机：%d,index:%d,rf.MaxnilNum:%d\n", rf.me,index,rf.MaxnilNum)
-	return index - rf.MaxnilNum, term, isLeader
+	return publicIndex, term, isLeader
 }
 
 // 测试器在每次测试结束后不会终止 Raft 创建的 goroutine，但会调用 Kill () 方法。
@@ -407,10 +516,6 @@ func (rf *Raft) Init() {
 	// 【注意】Raft 论文通常建议初始 Term 为 0。
 	// 这里设为 1 也可以正常工作，只要全网统一即可。
 	rf.currentTerm = 1
-
-	// （被覆盖的废代码）这里初始化为 0，但下方又被改成了 -1。
-	// 建议删除这一行，因为在 Go/Raft 中通常用 -1 代表“未投票给任何人”。
-	rf.votedFor = 0
 
 	// 初始化日志数组为空切片
 	rf.logs = make([]one_log, 0)
@@ -518,7 +623,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persist()
 
 	// 检查并更新本地的提交索引，确保恢复后的节点对当前全局提交情况有正确的认知。
-	rf.updateCommitIndex()
+	//rf.updateCommitIndex()
+	//DPrintf("主机：%d,此处rf.commitIndex=%d\n", rf.me,rf.commitIndex)
 
 	// ==========================================
 	// 阶段 4：启动后台驱动协程 (Goroutines)
@@ -529,16 +635,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//    并负责管理日志复制（更新 NextIndex/MatchIndex）。
 	go rf.LeaderAction()
 	DPrintf("主机：%d, LeaderAction() 启动\n", rf.me)
-
 	// 2. FollowerAction: 实现 Raft 的超时机制。如果超过选举超时 (Election Timeout)
 	//    未收到心跳，该协程会自动切换状态，发起新一轮选举。
 	go rf.FollowerAction()
-
+	DPrintf("主机：%d, FollowerAction() 启动\n", rf.me)
 	// 3. applyLog: 监听提交的日志索引变化，一旦有新的日志被 commit，
 	//    将其包装成 ApplyMsg 放入 applyCh，通知 KVServer 应用到状态机。
 	go rf.applyLog()
-
-	DPrintf("主机：%d, FollowerAction() 启动\n", rf.me)
-
 	return rf // 返回构建完成、准备就绪的 Raft 节点实例
 }

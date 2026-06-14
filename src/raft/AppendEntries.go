@@ -24,11 +24,12 @@ type AppendEntriesReply struct {
 }
 
 type InstallSnapshotArgs struct {
-	Term              int
-	LeaderId          int
-	LastIncludedIndex int
-	LastIncludedTerm  int
-	Data              []byte
+	Term                    int
+	LeaderId                int
+	LastIncludedIndex       int
+	LastIncludedTerm        int
+	LastIncludedPublicIndex int
+	Data                    []byte
 }
 
 type InstallSnapshotReply struct {
@@ -54,19 +55,19 @@ func (rf *Raft) applyLog() {
 		for rf.lastApplied < rf.commitIndex {
 			rf.mu.Lock()     // 锁住内部状态以读取日志和索引
 			rf.lastApplied++ // 递增应用索引
+			offset := rf.lastApplied - rf.lastIncludedIndex
 
 			// 情况 A：如果该日志已经被标记为提交过且存在 Cmd，跳过（幂等性）
-			if rf.committed[rf.lastApplied] == true && rf.logs[rf.lastApplied].Cmd != nil {
-				rf.persist() // 立即持久化状态变化
+			if rf.committed[offset] == true && rf.logs[offset].Cmd != nil {
+				//rf.persist() // 立即持久化状态变化
 				rf.mu.Unlock()
 				continue
 			}
 
 			// 情况 B：如果 Cmd 为空（可能是占位符/空日志），仅更新状态并统计占位数量
-			if rf.logs[rf.lastApplied].Cmd == nil && rf.lastApplied != 0 {
-				rf.CurnilNum++ // 记录空日志偏移量，用于修正索引映射
-				rf.logs[rf.lastApplied].Committed = true
-				rf.committed[rf.lastApplied] = true
+			if rf.logs[offset].Cmd == nil {
+				rf.logs[offset].Committed = true
+				rf.committed[offset] = true
 				rf.persist() // 立即持久化状态变化
 				rf.mu.Unlock()
 				continue
@@ -74,19 +75,19 @@ func (rf *Raft) applyLog() {
 
 			// 情况 C：正常的日志提交逻辑
 			newApplyMsg := new(ApplyMsg)
-			rf.logs[rf.lastApplied].Committed = true
-			rf.committed[rf.lastApplied] = true
+			rf.logs[offset].Committed = true
+			rf.committed[offset] = true
 			rf.persist() // 持久化修改后的 committed 状态
 
-			newApplyMsg.Command = rf.logs[rf.lastApplied].Cmd
+			newApplyMsg.Command = rf.logs[offset].Cmd
 			// 计算向上传递的 CommandIndex，减去空日志偏移量，确保索引连续
-			newApplyMsg.CommandIndex = rf.lastApplied - rf.CurnilNum
+			newApplyMsg.CommandIndex = rf.realToPublicIndex(rf.lastApplied)
 			newApplyMsg.CommandValid = true
 
 			// 🌟 致命阻塞风险点：直接发送到 applyCh
 			rf.applyCh <- *newApplyMsg
 
-			DPrintf("主机：%d中索引为%d的日志提交完成,提交内容为：%v\n", rf.me, rf.lastApplied-rf.CurnilNum, rf.logs[rf.lastApplied].Cmd)
+			DPrintf("主机：%d中索引为%d的日志提交完成,提交内容为：%v\n", rf.me, newApplyMsg.CommandIndex, rf.logs[offset].Cmd)
 			rf.mu.Unlock()
 		}
 	}
@@ -162,8 +163,13 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 				Term: args.LastIncludedTerm,
 				Cmd:  nil,
 			})
-			newLogs = append(newLogs, rf.logs[offset+1:]...)
+			newCommitted := []bool{true}
+			tail := append([]one_log(nil), rf.logs[offset+1:]...)
+			newLogs = append(newLogs, tail...)
+			committedTail := append([]bool(nil), rf.committed[offset+1:offset+1+len(tail)]...)
+			newCommitted = append(newCommitted, committedTail...)
 			rf.logs = newLogs
+			rf.committed = newCommitted
 		} else {
 			// 如果 Term 发生冲突，说明前面的日志全部失效。
 			// 丢弃整个日志，只保留一个哨兵节点。
@@ -171,6 +177,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 				Term: args.LastIncludedTerm,
 				Cmd:  nil,
 			}}
+			rf.committed = []bool{true}
 		}
 	} else {
 		// 如果本地日志比快照还要短，那本地日志全都是没用的，
@@ -179,12 +186,14 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			Term: args.LastIncludedTerm,
 			Cmd:  nil,
 		}}
+		rf.committed = []bool{true}
 	}
 
 	// 【更新 Raft 状态】
 	// 将自己的快照元数据推进到 Leader 传来的进度
 	rf.lastIncludedIndex = args.LastIncludedIndex
 	rf.lastIncludedTerm = args.LastIncludedTerm
+	rf.lastIncludedPublicIndex = args.LastIncludedPublicIndex
 
 	// 既然快照到了 LastIncludedIndex，说明此前的日志绝对已经被提交(Committed)且应用(Applied)了。
 	// 强行推进 commitIndex 和 lastApplied，防止倒退。
@@ -424,32 +433,39 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// 阶段 2：日志一致性检查与快速回退 (Fast Backup)
 		// ==========================================
 		// 规则：如果 PrevLogIndex 超出了本地日志长度，或者该位置的 Term 与 Leader 宣称的不一致，则追加失败。
-		if args.PrevLogIndex >= len(rf.logs) || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		lastLogIndex := rf.lastLogIndex()
+		prevLogOffset := args.PrevLogIndex - rf.lastIncludedIndex
+		if args.PrevLogIndex < rf.lastIncludedIndex || args.PrevLogIndex > lastLogIndex || rf.logs[prevLogOffset].Term != args.PrevLogTerm {
 
 			// Case 1: 本地日志太短，根本没有 PrevLogIndex 这个位置的日志
-			if args.PrevLogIndex >= len(rf.logs) {
-				DPrintf("主机：%d 日志存在问题 因为args.PrevLogIndex是%d但是len(rf.logs)为%d\n", rf.me, args.PrevLogIndex, len(rf.logs))
-				reply.ConflictIndex = len(rf.logs) // 告诉 Leader："我只有这么长，你从这里开始发"
+			if args.PrevLogIndex < rf.lastIncludedIndex {
+				DPrintf("主机：%d 日志存在问题 因为args.PrevLogIndex是%d但是lastIncludedIndex为%d\n", rf.me, args.PrevLogIndex, rf.lastIncludedIndex)
+				reply.ConflictIndex = rf.lastIncludedIndex + 1
+				reply.ConflictTerm = -1
+			} else if args.PrevLogIndex > lastLogIndex {
+				DPrintf("主机：%d 日志存在问题 因为args.PrevLogIndex是%d但是lastLogIndex为%d\n", rf.me, args.PrevLogIndex, lastLogIndex)
+				reply.ConflictIndex = lastLogIndex + 1 // 告诉 Leader："我只有这么长，你从这里开始发"
 				reply.ConflictTerm = -1
 
 				// Case 2: 长度够，但是在 PrevLogIndex 处的任期冲突了 (发生了网络分区或换届导致的分支)
 			} else {
-				DPrintf("主机：%d 日志存在问题 因为rf.logs[args.PrevLogIndex].Term是%d但是args.PrevLogTerm为%d\n", rf.me, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
+				DPrintf("主机：%d 日志存在问题 因为rf.logs[prevLogOffset].Term是%d但是args.PrevLogTerm为%d\n", rf.me, rf.logs[prevLogOffset].Term, args.PrevLogTerm)
 				i := args.PrevLogIndex
+				conflictTerm := rf.logs[prevLogOffset].Term
 
 				// 【快速回退算法】：试图一次性跳过一整个冲突的 Term，而不是每次 RPC 只往前退一个 Index
-				if rf.logs[args.PrevLogIndex].Term < args.PrevLogTerm {
+				if conflictTerm < args.PrevLogTerm {
 					// 本地任期比 Leader 的小（较少见，通常是因为被旧 Leader 截断过）
 					reply.ConflictIndex = args.PrevLogIndex - 1
-				} else if rf.logs[args.PrevLogIndex].Term > args.PrevLogTerm {
+				} else if conflictTerm > args.PrevLogTerm {
 					// 本地任期比 Leader 的大（这是典型的拥有未提交的“脏日志”）
 					// 往前遍历，找到属于当前冲突 Term 的第一条日志的起始位置
-					for i >= 0 && rf.logs[i].Term == rf.logs[args.PrevLogIndex].Term {
+					for i >= rf.lastIncludedIndex && rf.logs[i-rf.lastIncludedIndex].Term == conflictTerm {
 						i--
 					}
 					reply.ConflictIndex = i + 1 // 告诉 Leader："从我这个冲突 Term 的开头重新覆盖吧"
 				}
-				reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
+				reply.ConflictTerm = conflictTerm
 			}
 			DPrintf("主机：%d reply内容为%v\n", rf.me, reply)
 			reply.Success = false
@@ -465,13 +481,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// 🌟 安全追加算法：挨个比对，只有发生冲突时才截断，防止旧包抹杀新数据
 				for i, entry := range args.Entries {
 					idx := args.PrevLogIndex + 1 + i
+					offset := idx - rf.lastIncludedIndex
 
-					if idx < len(rf.logs) {
+					if offset < len(rf.logs) {
 						// 情况 1：同一位置日志已存在。比对 Term。
-						if rf.logs[idx].Term != entry.Term {
+						if rf.logs[offset].Term != entry.Term {
 							// 发现 Term 冲突！说明从这开始是旧 Leader 的脏数据。
 							// 仅从这个【冲突位置】开始截断覆盖，并拼接上剩余的新日志
-							rf.logs = append(rf.logs[:idx], args.Entries[i:]...)
+							rf.logs = append(rf.logs[:offset], args.Entries[i:]...)
 							break // 剩余日志已全部追加，跳出循环
 						}
 						// 💡 隐式逻辑：如果 Term 相同，说明是网络重传的、之前已经收过的合法包。
@@ -504,7 +521,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// 根据 Raft 论文，Follower 的 commitIndex 取决于 Leader 宣称的 commitIndex
 			// 和本地最新日志长度中的较小值（防止超前提交尚未收到的日志）
 			if args.LeaderCommit > rf.commitIndex {
-				rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
+				rf.commitIndex = min(args.LeaderCommit, rf.lastLogIndex())
 
 				// 💡 通常在这里还需要通过 Cond.Broadcast 唤醒 applyLog 协程，
 				// 从而把 commitIndex 范围内的新日志推送到状态机层 (kv.applyCh)！
@@ -819,11 +836,12 @@ func (rf *Raft) sendEntries(i int, wg *sync.WaitGroup, term int) {
 	// 已经被自己打包成快照删除了 (<= lastIncludedIndex)，就只能发送整个快照。
 	if rf.nextIndex[i] <= rf.lastIncludedIndex {
 		args := &InstallSnapshotArgs{
-			Term:              term,
-			LeaderId:          rf.me,
-			LastIncludedIndex: rf.lastIncludedIndex,
-			LastIncludedTerm:  rf.lastIncludedTerm,
-			Data:              rf.persister.ReadSnapshot(), // 从底层的持久化存储读取真实的快照二进制数据
+			Term:                    term,
+			LeaderId:                rf.me,
+			LastIncludedIndex:       rf.lastIncludedIndex,
+			LastIncludedTerm:        rf.lastIncludedTerm,
+			LastIncludedPublicIndex: rf.lastIncludedPublicIndex,
+			Data:                    rf.persister.ReadSnapshot(), // 从底层的持久化存储读取真实的快照二进制数据
 		}
 		reply := &InstallSnapshotReply{}
 

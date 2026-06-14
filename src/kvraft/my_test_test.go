@@ -844,6 +844,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 	// 节点 2 此时无法接收到任何新的日志，它“落后”了。
 	cfg.partition([]int{0, 1}, []int{2})
 	{
+		DPrintf("制造网络分区\n")
 		// 创建一个只能连接多数派 (节点 0 和 1) 的客户端
 		ck1 := cfg.makeClient([]int{0, 1})
 		
@@ -872,6 +873,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 	// 此时 0 必须成为 Leader (因为 2 日志太旧选不上)，而 0 想要提交新日志，就必须复制给 2。
 	cfg.partition([]int{0, 2}, []int{1})
 	{
+		DPrintf("第二次制造网络分区\n")
 		// 创建只能连接节点 0 和 2 的客户端
 		ck1 := cfg.makeClient([]int{0, 2})
 		
