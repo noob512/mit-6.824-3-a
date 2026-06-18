@@ -13,7 +13,7 @@ import (
 	"../raft"
 )
 
-const Debug = 1
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -302,6 +302,16 @@ func (kv *KVServer) Apply() {
                 // 将当前在状态机里跑出来的 op 顺着管道推过去。
                 // 此时还在锁内，能够保证通道发送的绝对原子性，且不会存在并发抢跑。
                 ch <- op 
+            }
+        }else if applyMsg.SnapshotValid {
+            kv.readSnapshot(applyMsg.Snapshot)
+            kv.lastSnapshotIndex = applyMsg.SnapshotIndex
+
+            for index, ch := range kv.notifyChs {
+                if index <= applyMsg.SnapshotIndex {
+                    ch <- Op{}
+                    delete(kv.notifyChs, index)
+                }
             }
         }
         

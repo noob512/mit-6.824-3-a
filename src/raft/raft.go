@@ -71,19 +71,16 @@ type Raft struct {
 	currentTerm int                 //服务器见过的最新任期号（首次启动时为 0，单调递增）
 	votedFor    int                 //在当前任期中投票给了哪个候选者 ID（若无则为 null）
 	logs        []one_log           //日志条目数组；每个条目包含一条状态机命令，以及该条目被领导者接收时的任期号（首条索引为 1）
-	committed   []bool
-	commitIndex int   // 已提交的最高日志条目的索引（初始为 0）
-	lastApplied int   // 已应用的最高日志条目的索引（初始为 0）
-	nextIndex   []int // 领导者发送给每个追随者的下一个日志条目的索引（初始为日志长度 + 1）
-	matchIndex  []int // 每个追随者已复制的最高日志条目的索引（初始为 0）
-	state       int   // 节点当前的角色（Follower、Candidate、Leader）
+	commitIndex int                 // 已提交的最高日志条目的索引（初始为 0）
+	lastApplied int                 // 已应用的最高日志条目的索引（初始为 0）
+	nextIndex   []int               // 领导者发送给每个追随者的下一个日志条目的索引（初始为日志长度 + 1）
+	matchIndex  []int               // 每个追随者已复制的最高日志条目的索引（初始为 0）
+	state       int                 // 节点当前的角色（Follower、Candidate、Leader）
 	//lastLogIndex    int                 //	最后一条日志的索引
 	lastMessageTime         time.Time     // 上次收到消息的时间（用于选举超时）
 	ElectionTimeout         time.Duration // 选举超时时间（随机值，用于触发选举）
 	turnToLeader            int           //控制initleader只在转换为leader时进行
 	applyCh                 chan ApplyMsg //用于向上层提交命令
-	MaxnilNum               int           //最大空白命令，用于用户在向主机提交日志时，返回正确的索引
-	CurnilNum               int           //当前空白命令，用于主机向上层提交日志时确定真实索引
 	commitCond              *sync.Cond
 	lastIncludedIndex       int
 	lastIncludedTerm        int
@@ -106,36 +103,52 @@ func (rf *Raft) RaftStateSize() int {
 }
 
 // ------------------------------
+// lastLogIndex 用于获取当前节点所拥有的最后一条日志的“全局真实物理索引”。
 func (rf *Raft) lastLogIndex() int {
+	// 计算公式：快照截断的绝对索引 + 当前内存中日志的相对偏移量
+	// 为什么是 len(rf.logs) - 1？
+	// 因为在包含快照的实现中，rf.logs[0] 通常被作为一个“占位符（Dummy Entry）”保留，
+	// 它用来记录快照最后包含的那个日志条目。
+	// 所以当前内存中真实的日志数量其实是 len(rf.logs) - 1。
 	return rf.lastIncludedIndex + len(rf.logs) - 1
 }
 
+// termAt 用于安全地获取指定全局真实物理索引 (index) 对应的任期号 (Term)。
 func (rf *Raft) termAt(index int) int {
+	// 1. 命中快照临界点：
+	// 如果请求的 index 正好等于快照截断的最后一个日志的索引。
+	// 此时该日志本身已经被压缩丢弃了，不在 rf.logs 中，
+	// 但我们需要依靠持久化的 rf.lastIncludedTerm 来返回它的任期。
 	if index == rf.lastIncludedIndex {
 		return rf.lastIncludedTerm
 	}
+
+	// 2. 在当前内存日志中查找：
+	// index - rf.lastIncludedIndex 计算的是该全局索引在本地 rf.logs 切片中的相对下标。
+	// 比如：lastIncludedIndex = 10，要找全局 index = 12 的日志，
+	// 那么它在切片中的下标就是 12 - 10 = 2，即 rf.logs[2]。
 	return rf.logs[index-rf.lastIncludedIndex].Term
 }
 
-// realToPublicIndex 用于将 Raft 内部的全局“真实”日志索引 (real) 
+// realToPublicIndex 用于将 Raft 内部的全局“真实”日志索引 (real)
 // 转换为对外（状态机或客户端）可见的“公共”日志索引 (public)。
 func (rf *Raft) realToPublicIndex(real int) int {
 	// 1. 获取基准索引：将 public 初始值设为快照中最后包含的公共索引。
 	// lastIncludedPublicIndex 记录的是发生日志压缩（打快照）前，状态机最后一次应用的有效命令索引。
-	public := rf.lastIncludedPublicIndex 
-	
+	public := rf.lastIncludedPublicIndex
+
 	// 2. 遍历当前保留在内存中的日志条目（即尚未被压缩进快照的日志）。
 	// offset 从 1 开始，因为在实现了快照的 Raft 中，rf.logs[0] 通常作为哨兵/占位符（Dummy Entry），
 	// 用来保存上一次快照的元数据（如 lastIncludedIndex 和 lastIncludedTerm）。
 	for offset := 1; offset < len(rf.logs); offset++ {
-		
+
 		// 3. 判断是否为有效命令日志：
 		// 如果 Cmd 不为 nil，说明这是一条真实的客户端请求命令，
 		// 而不是 Raft 内部生成的控制日志（比如 Leader 刚上任时为了提交之前任期的日志而追加的 no-op 空日志）。
 		if rf.logs[offset].Cmd != nil {
 			public++ // 只有遇到有效的客户端命令时，对外可见的公共索引才加 1
 		}
-		
+
 		// 4. 匹配目标真实索引：
 		// rf.lastIncludedIndex + offset 计算的是当前遍历到的日志在整个 Raft 历史中的“全局绝对真实索引”。
 		// 如果计算出的绝对索引等于我们要查找的目标 real 索引，则代表找到了。
@@ -143,20 +156,20 @@ func (rf *Raft) realToPublicIndex(real int) int {
 			return public // 返回累加计算得到的公共索引
 		}
 	}
-	
+
 	// 5. 兜底返回：
 	// 如果遍历完了当前内存中的所有日志都没有命中 target (可能是 real 值越界或者错误)，
 	// 则返回当前能计算出的最大 public 索引。
 	return public
 }
 
-// publicToRealIndex 用于将对外可见的公共索引 (publicIndex) 
+// publicToRealIndex 用于将对外可见的公共索引 (publicIndex)
 // 映射回 Raft 内部的真实物理全局索引 (realIndex)。
 // 返回值：
 // int: 转换后的真实全局索引。如果未找到或已过期，通常返回 -1。
 // bool: 是否成功在当前保留的日志（或快照边界）中找到了该索引。
 func (rf *Raft) publicToRealIndex(publicIndex int) (int, bool) {
-	
+
 	// 1. 检查快照边界与已清理的日志
 	// 如果请求的 publicIndex 小于或等于快照最后包含的公共索引，
 	// 说明该日志要么正好是快照的最后一个条目，要么已经被压缩丢弃了。
@@ -172,20 +185,20 @@ func (rf *Raft) publicToRealIndex(publicIndex int) (int, bool) {
 		// 内存中无法查到，返回 -1 和 false。
 		return -1, false
 	}
-	
+
 	// 2. 准备遍历内存中的活跃日志
 	// 基准索引：从快照最后包含的公共索引开始累加
 	public := rf.lastIncludedPublicIndex
-	
+
 	// 遍历当前内存日志，offset=1 同样是因为 logs[0] 是辅助打快照的占位符（Dummy Entry）
 	for offset := 1; offset < len(rf.logs); offset++ {
-		
+
 		// 3. 过滤出真实的客户端请求
 		// 只有遇到非空的客户端命令时，公共索引 public 才加 1。
 		// Raft 内部的空操作（No-op）会被跳过，不计入 public 索引。
 		if rf.logs[offset].Cmd != nil {
 			public++
-			
+
 			// 4. 匹配目标公共索引
 			// 累加后，如果当前的 public 正好等于我们要找的 publicIndex，
 			// 说明找到了对应的日志条目。
@@ -195,38 +208,12 @@ func (rf *Raft) publicToRealIndex(publicIndex int) (int, bool) {
 			}
 		}
 	}
-	
+
 	// 5. 越界或未找到
 	// 如果遍历完所有的内存日志都没有找到，说明该 publicIndex 超出了当前 Raft 节点已知的日志范围
 	// （例如，客户端查询了一个还没被生成的未来索引）。
 	return -1, false
 }
-
-// func (rf *Raft) persistData() []byte {
-// 	w := new(bytes.Buffer)
-// 	e := labgob.NewEncoder(w)
-
-// 	e.Encode(rf.currentTerm)
-// 	e.Encode(rf.votedFor)
-// 	e.Encode(rf.logs)
-// 	e.Encode(rf.lastIncludedIndex)
-// 	e.Encode(rf.lastIncludedTerm)
-
-// 	return w.Bytes()
-// }
-
-// // // 2C 阶段实现：将持久化状态编码并保存到 persister
-// // 示例：使用 labgob 编码状态，通过 rf.persister.SaveRaftState() 保存
-// func (rf *Raft) persist() {
-// 	w := new(bytes.Buffer)
-//     e := labgob.NewEncoder(w)
-//     e.Encode(rf.currentTerm)
-//     e.Encode(rf.votedFor)
-//     e.Encode(rf.logs)        // ✅
-// 	//e.Encode(rf.committed)
-//     data := w.Bytes()
-//     rf.persister.SaveRaftState(data)  // ✅ 完全覆盖之前的内容
-// }
 
 func (rf *Raft) persistData() []byte {
 	w := new(bytes.Buffer)
@@ -285,13 +272,11 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	// 【核心逻辑 1：创建新的切片，避免内存泄漏】
 	newLog := make([]one_log, 0)
-	newCommitted := make([]bool, 0)
 
 	// 【核心逻辑 2：设置“哨兵”/“虚拟”节点】
 	newLog = append(newLog, one_log{
 		Term: term,
 	})
-	newCommitted = append(newCommitted, true)
 	DPrintf("主机：%d 刚创建的一条日志为: %+v\n",
 		rf.me, newLog)
 
@@ -303,13 +288,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		// 采用 append + nil 初始化技巧进行【深度拷贝】。
 		tail := append([]one_log(nil), rf.logs[offset+1:]...)
 		newLog = append(newLog, tail...)
-		committedTail := append([]bool(nil), rf.committed[offset+1:offset+1+len(tail)]...)
-		newCommitted = append(newCommitted, committedTail...)
 	}
 
 	// 【状态更新】
 	rf.logs = newLog
-	rf.committed = newCommitted
 	rf.lastIncludedIndex = realIndex
 	rf.lastIncludedTerm = term
 	rf.lastIncludedPublicIndex = index
@@ -340,61 +322,6 @@ func (rf *Raft) updateTime() {
 	rf.lastMessageTime = time.Now()
 	rf.ElectionTimeout = rf.randomTimeout()
 }
-
-// readPersist 是 Raft 实现持久化恢复的核心方法。
-// 它的作用是当节点重启（Crash & Restart）时，从底层的持久化存储器（Persister）
-// 中读取之前保存的二进制状态快照，并将其还原到 Raft 对象的内存内存字段中，
-// 从而确保节点能够“找回记忆”，维持分布式系统的连续性。
-//
-// 参数：
-//   data: 从 persister.ReadRaftState() 获取的原始二进制数据流。
-// func (rf *Raft) readPersist(data []byte) {
-//     // 1. 基础校验：如果 data 为空（例如节点第一次启动），则无需执行任何恢复逻辑，直接跳出。
-//     if data == nil || len(data) < 1 {
-//         return
-//     }
-
-//     // 2. 创建读取缓冲区 (Buffer)：将 byte 数组转换成一个可流式读取的 Reader 对象，
-//     // 供后续的 gob 解码器使用。
-//     r := bytes.NewBuffer(data)
-
-//     // 3. 初始化 labgob 解码器：labgob 是 MIT 为此课程封装的 go 标准库 encoding/gob 的包装器，
-//     // 它能将内存中的数据结构自动序列化为字节流，并在此处反序列化恢复。
-//     d := labgob.NewDecoder(r)
-
-//     // 4. 定义用于承接恢复数据的临时中间变量。
-//     // 注意：变量类型必须与 persist() 函数写入时的顺序和类型完全严格对应！
-//     var currentTerm int
-//     var votedFor int
-//     var logs []one_log // 注意这里必须对应你底层使用的日志存储结构类型
-//     var committed []bool
-
-//     // 5. 按顺序执行反序列化 (Decode)。
-//     // 这里使用了短路逻辑，如果任何一步解码失败（返回 error），则整个恢复动作放弃，
-//     // 保护内存状态不被破坏（即“原子性恢复”）。
-//     if d.Decode(&currentTerm) != nil ||
-//        d.Decode(&votedFor) != nil ||
-//        d.Decode(&logs) != nil ||
-//        d.Decode(&committed) != nil {
-
-//         // 如果序列化数据损坏，通常意味着磁盘数据异常，打印错误日志以便排查。
-//         DPrintf("Error decoding Raft state")
-//     } else {
-//         // 6. 原子性更新内存状态：
-//         // 只有在所有字段都成功读取后，才一次性覆盖原有的内存变量。
-//         // 这样可以确保节点要么恢复到崩溃前的完整状态，要么保持空白，绝不会出现“半恢复”的混乱状态。
-//         rf.currentTerm = currentTerm
-//         rf.votedFor = votedFor
-//         rf.logs = logs
-
-//         // 🌟 辅助索引更新：根据恢复后的日志长度，即时更新末尾索引。
-//         rf.lastLogIndex = len(rf.logs)
-//         rf.committed = committed
-
-//         DPrintf("节点 %d 成功恢复状态：Term=%d, LogLen=%d, VotedFor=%d",
-//                  rf.me, rf.currentTerm, rf.lastLogIndex, rf.votedFor)
-//     }
-// }
 
 // readPersist 是 Raft 实现持久化恢复的核心方法。
 // 它的作用是当节点重启（Crash & Restart）时，从底层的持久化存储器（Persister）
@@ -442,14 +369,8 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.lastIncludedIndex = lastIncludedIndex
 		rf.lastIncludedTerm = lastIncludedTerm
 		rf.lastIncludedPublicIndex = lastIncludedPublicIndex
-
-		// 7. 更新辅助索引
-		//rf.lastLogIndex = len(rf.logs)
-
-		// 🌟 核心修复：易失性状态绝不能从磁盘读！必须全新初始化。
-		// 这里重新 make 一个全为 false 的布尔数组。
-		// 预留一些缓冲容量 (比如 len+1000)，防止你在后续高并发追加时频繁触发扩容或越界 Panic。
-		rf.committed = make([]bool, len(rf.logs)+1000)
+		rf.commitIndex = rf.lastIncludedIndex
+		rf.lastApplied = rf.lastIncludedIndex
 
 		DPrintf("节点 %d 成功恢复状态：Term=%d, LogLen=%d, VotedFor=%d",
 			rf.me, rf.currentTerm, rf.lastLogIndex(), rf.votedFor)
@@ -480,12 +401,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = rf.lastLogIndex() + 1
 	term = rf.currentTerm
 	rf.logs = append(rf.logs, one_log{Cmd: command, Term: term, Index: index, Committed: false})
-	rf.committed = append(rf.committed, false)
 	publicIndex := rf.realToPublicIndex(index)
 	DPrintf("主机：%d是leader,日志增加完成,日志内容为：%v\n", rf.me, rf.logs)
-	//log.Printf("主机：%d是leader,日志增加完成,日志内容为：%v\n", rf.me,rf.logs)
 	rf.persist()
-	//DPrintf("主机：%d,index:%d,rf.MaxnilNum:%d\n", rf.me,index,rf.MaxnilNum)
 	return publicIndex, term, isLeader
 }
 
@@ -558,25 +476,8 @@ func (rf *Raft) Init() {
 	}
 	rf.logs = append(rf.logs, zero_log)
 
-	// 自定义状态：可能用于统计你自定义的 nil 操作或某种限流控制
-	rf.MaxnilNum = 0
-	rf.CurnilNum = 0
-
-	// 【高危设计】初始化一个与日志长度平行的布尔切片来记录是否提交。
-	rf.committed = append(rf.committed, false)
-
 	// 打印调试信息，表明该节点的内存状态初始化完毕
 	DPrintf("主机：%d,RF建立完成\n", rf.me)
-}
-
-func (rf *Raft) updateCommitIndex() {
-	for i := rf.commitIndex + 1; i < len(rf.logs); i++ {
-		if rf.committed[i] {
-			rf.commitIndex = i
-		} else {
-			break
-		}
-	}
 }
 
 // Make 函数是 Raft 实例的入口点。它负责初始化所有必要的内部结构，

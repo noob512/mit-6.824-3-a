@@ -57,17 +57,9 @@ func (rf *Raft) applyLog() {
 			rf.lastApplied++ // 递增应用索引
 			offset := rf.lastApplied - rf.lastIncludedIndex
 
-			// 情况 A：如果该日志已经被标记为提交过且存在 Cmd，跳过（幂等性）
-			if rf.committed[offset] == true && rf.logs[offset].Cmd != nil {
-				//rf.persist() // 立即持久化状态变化
-				rf.mu.Unlock()
-				continue
-			}
-
 			// 情况 B：如果 Cmd 为空（可能是占位符/空日志），仅更新状态并统计占位数量
 			if rf.logs[offset].Cmd == nil {
 				rf.logs[offset].Committed = true
-				rf.committed[offset] = true
 				rf.persist() // 立即持久化状态变化
 				rf.mu.Unlock()
 				continue
@@ -76,7 +68,6 @@ func (rf *Raft) applyLog() {
 			// 情况 C：正常的日志提交逻辑
 			newApplyMsg := new(ApplyMsg)
 			rf.logs[offset].Committed = true
-			rf.committed[offset] = true
 			rf.persist() // 持久化修改后的 committed 状态
 
 			newApplyMsg.Command = rf.logs[offset].Cmd
@@ -98,7 +89,7 @@ func (rf *Raft) applyLog() {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	// 加锁保护 Raft 内部状态
 	rf.mu.Lock()
-
+	DPrintf("调用安装快照函数\n")
 	// 默认回复当前的 Term
 	reply.Term = rf.currentTerm
 
@@ -163,13 +154,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 				Term: args.LastIncludedTerm,
 				Cmd:  nil,
 			})
-			newCommitted := []bool{true}
 			tail := append([]one_log(nil), rf.logs[offset+1:]...)
 			newLogs = append(newLogs, tail...)
-			committedTail := append([]bool(nil), rf.committed[offset+1:offset+1+len(tail)]...)
-			newCommitted = append(newCommitted, committedTail...)
 			rf.logs = newLogs
-			rf.committed = newCommitted
 		} else {
 			// 如果 Term 发生冲突，说明前面的日志全部失效。
 			// 丢弃整个日志，只保留一个哨兵节点。
@@ -177,7 +164,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 				Term: args.LastIncludedTerm,
 				Cmd:  nil,
 			}}
-			rf.committed = []bool{true}
 		}
 	} else {
 		// 如果本地日志比快照还要短，那本地日志全都是没用的，
@@ -186,7 +172,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			Term: args.LastIncludedTerm,
 			Cmd:  nil,
 		}}
-		rf.committed = []bool{true}
 	}
 
 	// 【更新 Raft 状态】
@@ -217,7 +202,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		SnapshotValid: true,
 		Snapshot:      args.Data,
 		SnapshotTerm:  args.LastIncludedTerm,
-		SnapshotIndex: args.LastIncludedIndex,
+		SnapshotIndex: args.LastIncludedPublicIndex,
 	}
 
 	// 【极其关键的一步：先解锁，再发送】
@@ -232,145 +217,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}()
 }
 
-// // AppendEntries 是 Follower 或 Candidate 接收 Leader 发来的心跳或日志追加请求的 RPC 处理器。
-// func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-//     // 1. 获取互斥锁，保护节点状态，并在函数退出时自动释放
-//     rf.mu.Lock()
-//     defer func() {
-//         rf.mu.Unlock()
-//         DPrintf("主机：%d处理完心跳即将退出\n", rf.me)
-//     }()
-
-//     DPrintf("主机：%d,AppendEntries启动,当前日志为%v\n", rf.me, rf.logs)
-
-//     // 2. 重置选举超时计时器
-//     // ⚠️ 注意：标准的 Raft 论文建议仅在 args.Term >= rf.currentTerm 时才重置定时器。
-//     // 如果无脑重置，可能会导致被旧 Leader 的网络延迟包意外打断当前正常的选举。
-//     rf.updateTime()
-
-//     // ==========================================
-//     // 阶段 1：任期校验与身份降级
-//     // ==========================================
-//     if rf.currentTerm <= args.Term {
-//         // 如果对方的任期严格大于自己，说明自己已经“过气”
-//         if rf.currentTerm < args.Term {
-//             rf.votedFor = -1 // 清空曾经的投票记录，准备迎接新时代
-//             rf.persist()     // 状态改变，落盘持久化
-//         }
-
-//         // 【特殊逻辑】：如果当前节点自认为是 Leader，但收到了等于或高于自己任期的合法 AppendEntries
-//         if rf.state == Leader {
-//             rf.state = Follower // 乖乖退位
-//             rf.turnToLeader = 0
-
-//             if args.Term > rf.currentTerm {
-//                 rf.currentTerm = args.Term
-//                 rf.persist()
-//             }
-//             reply.Term = rf.currentTerm
-//             reply.Success = false
-//             // ⚠️ 潜在缺陷：退位后直接拒绝了本次追加（ConflictIndex = PrevLogIndex+1）并 return。
-//             // 在标准 Raft 中，退位后通常会继续往下走，直接处理这段合法 Leader 发来的日志，
-//             // 否则 Leader 还需要多发一次 RPC 才能同步数据。
-//             reply.ConflictIndex = args.PrevLogIndex + 1
-//             DPrintf("主机%d转为follower-心跳接收处\n", rf.me)
-//             return
-//         }
-
-//         // 如果当前是 Follower 或 Candidate，全面认怂，认同该 Leader
-//         rf.state = Follower
-//         rf.turnToLeader = 0
-//         DPrintf("主机%d保持follower-心跳接收处,当前commitIndex：%d\n", rf.me, rf.commitIndex)
-//         rf.currentTerm = args.Term
-//         reply.Term = rf.currentTerm
-//         rf.persist()
-
-//         // // ⚠️ 防御性检查（非标准但有用的防御机制）：防止落后的 Leader 强行覆盖已提交的进度
-//         // if rf.commitIndex > args.LeaderCommit {
-//         //     reply.Success = false
-//         //     reply.ConflictIndex = args.PrevLogIndex + 1
-//         //     return
-//         // }
-
-//         // ==========================================
-//         // 阶段 2：日志一致性检查与快速回退 (Fast Backup)
-//         // ==========================================
-//         // 规则：如果 PrevLogIndex 超出了本地日志长度，或者该位置的 Term 与 Leader 宣称的不一致，则追加失败。
-//         if args.PrevLogIndex >= len(rf.logs) || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
-
-//             // Case 1: 本地日志太短，根本没有 PrevLogIndex 这个位置的日志
-//             if args.PrevLogIndex >= len(rf.logs) {
-//                 DPrintf("主机：%d 日志存在问题 因为args.PrevLogIndex是%d但是len(rf.logs)为%d\n", rf.me, args.PrevLogIndex, len(rf.logs))
-//                 reply.ConflictIndex = len(rf.logs) // 告诉 Leader："我只有这么长，你从这里开始发"
-//                 reply.ConflictTerm = -1
-
-//             // Case 2: 长度够，但是在 PrevLogIndex 处的任期冲突了 (发生了网络分区或换届导致的分支)
-//             } else {
-//                 DPrintf("主机：%d 日志存在问题 因为rf.logs[args.PrevLogIndex].Term是%d但是args.PrevLogTerm为%d\n", rf.me, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
-//                 i := args.PrevLogIndex
-
-//                 // 【快速回退算法】：试图一次性跳过一整个冲突的 Term，而不是每次 RPC 只往前退一个 Index
-//                 if rf.logs[args.PrevLogIndex].Term < args.PrevLogTerm {
-//                     // 本地任期比 Leader 的小（较少见，通常是因为被旧 Leader 截断过）
-//                     reply.ConflictIndex = args.PrevLogIndex - 1
-//                 } else if rf.logs[args.PrevLogIndex].Term > args.PrevLogTerm {
-//                     // 本地任期比 Leader 的大（这是典型的拥有未提交的“脏日志”）
-//                     // 往前遍历，找到属于当前冲突 Term 的第一条日志的起始位置
-//                     for i >= 0 && rf.logs[i].Term == rf.logs[args.PrevLogIndex].Term {
-//                         i--
-//                     }
-//                     reply.ConflictIndex = i + 1 // 告诉 Leader："从我这个冲突 Term 的开头重新覆盖吧"
-//                 }
-//                 reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
-//             }
-//             DPrintf("主机：%d reply内容为%v\n", rf.me, reply)
-//             reply.Success = false
-
-//         // ==========================================
-//         // 阶段 3：匹配成功，执行日志追加与提交
-//         // ==========================================
-//         } else {
-//             reply.Success = true
-
-//             // 如果 Leader 传来了新的日志条目 (非空心跳)
-//             if args.Entries != nil {
-//                 // 核心追加逻辑：保留本地日志 0 到 PrevLogIndex 的部分（因为这部分已验证匹配），
-//                 // 然后强行拼接上 Leader 发来的全部新日志。这会隐式地截断本地之后所有的脏日志。
-//                 rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
-//                 DPrintf("主机：%d 日志更新,当前日志内容为%v,当前term为%d\n", rf.me, rf.logs, rf.currentTerm)
-
-//                 // 扩容自定义的 committed 状态数组（如果你在上层状态机需要用到）
-//                 if len(rf.committed) < len(rf.logs) {
-//                     extra := make([]bool, len(rf.logs)-len(rf.committed))
-//                     rf.committed = append(rf.committed, extra...)
-//                 }
-
-//                 rf.lastLogIndex = len(rf.logs)
-//                 rf.persist() // 🌟 日志发生了变化，必须立刻持久化落盘
-//             } else {
-//                 DPrintf("主机：%d收到空心跳信息,当前日志内容为%v，当前term为%d\n", rf.me, rf.logs, rf.currentTerm)
-//             }
-
-//             // 推进 commitIndex
-//             // 根据 Raft 论文，Follower 的 commitIndex 取决于 Leader 宣称的 commitIndex
-//             // 和本地最新日志长度中的较小值（防止超前提交尚未收到的日志）
-//             if args.LeaderCommit > rf.commitIndex {
-//                 rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
-
-//                 // 💡 通常在这里还需要通过 Cond.Broadcast 唤醒 applyLog 协程，
-//                 // 从而把 commitIndex 范围内的新日志推送到状态机层 (kv.applyCh)！
-//             }
-//         }
-
-//     // ==========================================
-//     // 阶段 4：拒绝过期 Leader
-//     // ==========================================
-//     } else {
-//         // 如果对方的 Term 比自己还小，说明对方是个网络延迟的“前朝遗老”
-//         reply.Success = false
-//         reply.Term = rf.currentTerm // 返回自己更高的 Term，促使对方立刻降级
-//     }
-// }
 
 // AppendEntries 是 Follower 或 Candidate 接收 Leader 发来的心跳或日志追加请求的 RPC 处理器。
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -504,12 +350,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 				DPrintf("主机：%d 日志更新,当前日志内容为%v,当前term为%d\n", rf.me, rf.logs, rf.currentTerm)
 
-				// 扩容自定义的 committed 状态数组（保留你原有的逻辑）
-				if len(rf.committed) < len(rf.logs) {
-					extra := make([]bool, len(rf.logs)-len(rf.committed))
-					rf.committed = append(rf.committed, extra...)
-				}
-
 				// ⚠️ 注意：上面原本是 rf.lastLogIndex = len(rf.logs)，为了严谨，最好改成减 1
 				//rf.lastLogIndex = len(rf.logs) - 1
 				rf.persist() // 🌟 日志发生了变化，立刻持久化落盘
@@ -548,99 +388,6 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 	return ok
 }
 
-// // HandleAppendEntriesReply 是 Leader 处理 Follower 返回的 AppendEntries 响应的回调函数。
-// // 它的核心职责是：
-// // 1. 检查自己是否已经“过气”（遇到更高的 Term），如果是则立即退位。
-// // 2. 如果日志产生冲突，利用快速回退算法（Fast Backup）迅速定位冲突点，更新 nextIndex。
-// // 3. 如果追加成功，更新 matchIndex 和 nextIndex，并唤醒后台协程去检查是否可以推进全局 commitIndex。
-// func (rf *Raft) HandleAppendEntriesReply(i int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
-//     rf.mu.Lock()
-//     defer rf.mu.Unlock()
-//     DPrintf("主机：%d, HandleAppendEntriesReply启动\n", rf.me)
-
-//     // ==========================================
-//     // 阶段 1：请求被拒绝 (Success == false)
-//     // ==========================================
-//     // 前置条件：当前节点必须还是 Leader（如果在等待 RPC 期间被降级了，就不该处理响应）
-//     if reply.Success == false && rf.state == Leader {
-
-//         // 场景 A：任期落后（大清亡了）
-//         // 如果 Follower 返回的 Term 比 Leader 当前的 Term 还要大，
-//         // 说明集群中已经有了新的 Leader，当前节点必须立刻无条件退位。
-//         if reply.Term > rf.currentTerm {
-//             rf.currentTerm = reply.Term
-//             rf.state = Follower // 降级为跟随者
-//             rf.turnToLeader = 0 // 重置新任 Leader 标志
-//             DPrintf("主机%d转为follower-心跳回复处\n", rf.me)
-
-//             rf.votedFor = -1    // 清空投票记录，准备可能的新一轮选举
-//             rf.updateTime()     // 重置选举超时定时器，防止刚降级就立刻发起选举
-//             rf.persist()        // 🌟 任期和投票记录改变，必须落盘持久化
-
-//             // 🌟 唤醒后台的 checkCommit 协程
-//             // 因为当前节点已经不是 Leader，需要唤醒正在 Wait() 的协程，
-//             // 让它在下一轮循环检查状态时发现自己是 Follower 从而安全退出或挂起。
-//             if rf.commitCond != nil {
-//                 rf.commitCond.Broadcast()
-//             }
-
-//         // 场景 B：任期没问题，但是日志不匹配（Log Inconsistency）
-//         // 此时触发 6.824 中极其重要的“快速回退 (Fast Backup)”逻辑，避免 nextIndex 一次只减 1 导致同步极慢。
-//         } else {
-//             // Case 1: Follower 那个位置根本没有日志（日志太短了）
-//             // Follower 返回 ConflictTerm = -1，ConflictIndex 是它的日志总长度。
-//             // Leader 直接把 nextIndex 降到 Follower 期望的那个位置。
-//             if reply.ConflictTerm == -1 {
-//                 rf.nextIndex[i] = reply.ConflictIndex
-
-//             // Case 2 & 3: Follower 那个位置有日志，但是任期冲突了
-//             } else if reply.ConflictTerm > args.PrevLogTerm {
-//                 // 如果 Follower 的冲突任期比 Leader 发过去的 PrevLogTerm 还大（逻辑上较为罕见，通常做统一回退）
-//                 // Leader 直接回退到 Follower 提供的该冲突任期的第一条日志位置。
-//                 rf.nextIndex[i] = reply.ConflictIndex
-
-//             } else if reply.ConflictTerm < args.PrevLogTerm {
-//                 // 如果 Follower 的冲突任期小于 Leader 发过去的 PrevLogTerm。
-//                 // Leader 需要在自己的日志中，从前往后倒推，试图找到这个 ConflictTerm 的最后一条日志。
-//                 pos := args.PrevLogIndex
-//                 for pos >= 0 && rf.logs[pos].Term != reply.ConflictTerm {
-//                     pos--
-//                 }
-//                 // 如果找到了，或者遍历完了，就把 nextIndex 设为该 Term 的后一位
-//                 rf.nextIndex[i] = pos + 1
-//             }
-
-//             // 兜底防御：由于 Raft 真实日志通常从下标 1 开始（下标 0 是哨兵 nil 节点），
-//             // 严禁把 nextIndex 减到 0，否则后续发心跳时会数组越界。
-//             if rf.nextIndex[i] == 0 {
-//                 rf.nextIndex[i]++
-//             }
-//             DPrintf("Leader:%d 更新matchIndex[%d]为%d(其实没更新) 更新nextIndex[%d]为%d", rf.me, i, rf.matchIndex[i], i, rf.nextIndex[i])
-//         }
-
-//     // ==========================================
-//     // 阶段 2：请求被接受 (Success == true)
-//     // ==========================================
-//     // 说明 Follower 完美匹配了 PrevLogIndex，并且成功把发过去的 Entries 记入了自己的日志。
-//     } else if reply.Success == true && rf.state == Leader {
-//         // 更新已经安全复制到的最高索引：传入的基准索引 + 这次打包发过去的日志数量
-//         rf.matchIndex[i] = args.PrevLogIndex + len(args.Entries)
-//         // 更新下一次准备给该节点发日志的起点索引
-//         rf.nextIndex[i] = args.PrevLogIndex + len(args.Entries) + 1
-
-//         DPrintf("Leader:%d 更新matchIndex[%d]为%d 更新nextIndex[%d]为%d", rf.me, i, rf.matchIndex[i], i, rf.nextIndex[i])
-
-//         // 🌟 唤醒检查提交的后台协程
-//         // 既然有一个节点成功跟上了最新的进度，这意味着极有可能已经凑够了多数派！
-//         // 立刻 Broadcast 叫醒等待在条件变量上的 checkCommit 协程，让它去算选票、推 commitIndex。
-//         rf.commitCond.Broadcast()
-
-//         // 性能考量：虽然你加了 persist()，但实际上 matchIndex 和 nextIndex
-//         // 属于 Leader 的 Volatile State（易失性状态），无需落盘。
-//         // 若没有改变 currentTerm、votedFor 或 logs，这里可以不调用 persist() 以节省 IO。
-//         rf.persist()
-//     }
-// }
 
 // HandleAppendEntriesReply 处理从 Follower 返回的 AppendEntries 响应。
 // i: Follower 的节点下标
@@ -757,60 +504,6 @@ func (rf *Raft) HandleAppendEntriesReply(i int, args *AppendEntriesArgs, reply *
 	}
 }
 
-// 1. 重构sendRequest函数：加入context超时控制
-// func (rf *Raft) sendEntries(i int, wg *sync.WaitGroup,term int) {
-// 	// 必须在函数开头调用wg.Done()，确保无论是否超时，WaitGroup计数都会递减
-// 	defer wg.Done()
-// 	reply := new(AppendEntriesReply)
-// 	args := new(AppendEntriesArgs)
-// 	args.Term = term
-// 	args.LeaderId = rf.me
-// 	args.PrevLogIndex = rf.nextIndex[i] - 1
-// 	//DPrintf("rf.logs的长度为%d,args.PrevLogIndex是%d\n",len(rf.logs),args.PrevLogIndex)
-// 	args.PrevLogTerm = rf.logs[args.PrevLogIndex].Term
-// 	args.Entries = rf.logs[rf.nextIndex[i]:]
-// 	args.LeaderCommit = rf.commitIndex
-// 	if rf.nextIndex[i] < len(rf.logs) {
-// 		args.Entries = rf.logs[rf.nextIndex[i]:]
-// 	}
-// 	args.LeaderCommit = rf.commitIndex
-// 	DPrintf("主机：%d send AppendEntries RPC to %d begin,自身term=%d,日志为%v\n且日志内容中PrevLogIndex: %d,PrevLogTerm: %d,LeaderCommit:%d,Entries: %v", rf.me, i,rf.currentTerm,rf.logs, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
-// 	//DPrintf("主机：%d send AppendEntries RPC to %d begin,args: %v", rf.me, i,args)
-
-// 	// 2. 创建20ms超时的上下文：ctx用于控制超时，cancel用于主动取消（需defer避免泄漏）
-// 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-// 	defer cancel() // 确保函数退出时释放context资源，避免内存泄漏
-
-// 	// 3. 创建一个通道：用于接收RPC的执行结果（成功/失败）
-// 	rpcResult := make(chan bool, 1) // 缓冲通道，避免协程阻塞
-
-// 	// 4. 启动子协程：执行RPC发送逻辑（将RPC与超时检测解耦）
-// 	go func() {
-// 		// 执行RPC发送（这是可能耗时的操作）
-// 		ok := rf.sendAppendEntries(i, args, reply)
-// 		// 将RPC结果发送到通道（即使超时，发送也不会阻塞，因为通道有缓冲）
-// 		rpcResult <- ok
-// 	}()
-
-// 	// 5. 超时检测与结果处理：监听ctx.Done()（超时信号）或rpcResult（RPC结果）
-// 	select {
-// 	case ok := <-rpcResult:
-// 		// case1：RPC在20ms内完成，处理结果
-// 		if !ok {
-// 			DPrintf("主机：%d,AppendEntries RPC action send to %d fail\n", rf.me, i)
-// 		} else {
-// 			DPrintf("主机：%d,AppendEntries RPC action send to %d finished\n", rf.me, i)
-// 			// 处理投票回复（需加锁保护共享变量agreedCandidateNum）
-// 			rf.HandleAppendEntriesReply(i, args, reply)
-// 		}
-
-// 	case <-ctx.Done():
-// 		// case2：20ms超时，ctx.Done()通道被触发（返回超时原因）
-// 		DPrintf("主机：%d send to %d AppendEntries RPC timeout (exceed 20ms), force exit\n", rf.me, i)
-// 		// 超时后主动退出，不执行后续逻辑（相当于“强行结束”该协程的有效逻辑）
-// 		return
-// 	}
-// }
 
 // sendEntries 是 Leader 为单个 Follower (下标为 i) 同步日志或发送快照的函数。
 // 通常作为 Goroutine 并发运行。wg 用于通知主调用协程该发送任务已结束。
@@ -976,78 +669,6 @@ func (rf *Raft) sendEntries(i int, wg *sync.WaitGroup, term int) {
 	}
 }
 
-// checkCommit 是一个用于检查并推进 Leader 节点 commitIndex 的函数。
-// 🚨 注意：当前实现为一个包含死循环和 time.Sleep 的后台轮询协程。
-// 在严苛的分布式测试（如 6.824 3A 高并发分区测试）中，如果在每次发送心跳时
-// 都启动一个这样的协程，会迅速导致数十万个睡眠协程泄漏，最终耗尽资源卡死系统。
-//
-// 正确的架构应该是：移除外层的 for 循环和 time.Sleep，将其变为一个普通的同步函数，
-// 并仅在 Leader 收到 AppendEntries RPC 的成功回复且更新了 matchIndex 时调用一次。
-// func (rf *Raft) checkCommit() {
-//     DPrintf("主机：%d启动checkCommit\n", rf.me)
-//     // ❌ 架构缺陷：死循环轮询。这会将本应由事件驱动的逻辑转变为无休止的后台消耗。
-//     for {
-//         rf.mu.Lock() // 获取锁，准备读取核心状态
-
-//         // 1. 身份校验：只有 Leader 才有资格推进全局的 commitIndex
-//         if rf.state != Leader||rf.killed() {
-//             rf.mu.Unlock() // 不是 Leader，立即释放锁
-//             // ❌ 架构缺陷：无效的睡眠等待。如果节点不是 Leader，这个协程应该直接 return 退出，
-//             // 而不是永远睡在这里浪费资源。
-//             DPrintf("主机：%d退出checkCommit\n", rf.me)
-// 			return
-//             // time.Sleep(20 * time.Millisecond)
-//             // continue
-//         } else {
-//             // 2. 核心推进逻辑：根据 Raft 论文的 Rules for Servers (Leader) 5.3 & 5.4 节
-//             // 从最新的日志索引开始，从后往前遍历，寻找满足多数派复制条件的最高索引 N。
-//             // 遍历范围：[len(rf.logs)-1, rf.commitIndex)
-//             for N := len(rf.logs) - 1; N > rf.commitIndex; N-- {
-
-//                 // 3. 关键安全性规则 (论文 Figure 8)：
-//                 // Leader 只能提交**当前任期**内创建的日志条目。
-//                 // 如果发现某条日志的任期不是当前任期，不能直接通过计算副本来提交它
-//                 // （必须等到当前任期的一条新日志被提交，才能隐式地将旧任期的日志一起提交）。
-//                 if rf.logs[N].Term != rf.currentTerm {
-//                     // 这里使用 break 是因为从后往前遍历，如果遇到旧任期日志，
-//                     // 说明当前任期还没有日志被安全复制（或者遍历已经越过了当前任期的边界），
-//                     // 因此无需继续向前检查，直接跳出。
-//                     break
-//                 }
-
-//                 numsCommit := 0 // 计数器：记录有多少个节点已经复制了索引至少为 N 的日志
-
-//                 // 4. 统计副本数：遍历集群中的所有节点
-//                 for i := 0; i < len(rf.peers); i++ {
-//                     if i == rf.me {
-//                         // Leader 本身必定拥有该日志，直接算作一票
-//                         numsCommit++
-//                         continue
-//                     } else if rf.matchIndex[i] >= N {
-//                         // 如果节点 i 的 matchIndex 大于等于 N，说明它已经复制了这条日志
-//                         numsCommit++
-//                     }
-//                 }
-
-//                 // 5. 多数派判定：如果已复制的节点数超过集群半数（包括自己）
-//                 if numsCommit*2 > len(rf.peers) && rf.state == Leader {
-//                     // 更新 Leader 的 commitIndex 到 N
-//                     // 此时，后台的 applyLog 协程一旦发现 commitIndex > lastApplied，
-//                     // 就会立刻开始将日志推送给 KVServer 状态机。
-//                     rf.commitIndex = N
-
-//                     // 找到最高的可提交索引后即可跳出（因为更小的索引自然也被多数派复制了）
-//                     break
-//                 }
-//             }
-//             // 2. 带着锁直接调用 Wait()！
-//             // Wait 会自动帮你 Unlock，醒来时会自动帮你重新 Lock。
-//             rf.commitCond.Wait()
-
-//             rf.mu.Unlock() // 3. Wait 结束后释放锁，进入下一轮循环
-//         }
-//     }
-// }
 
 // checkCommit 是一个在 Leader 当选后通常以后台协程 (goroutine) 运行的函数。
 // 它的职责是：不断检查 matchIndex 数组，看是否有一条当前任期的新日志已经被复制到了多数派节点，
@@ -1150,12 +771,6 @@ func (rf *Raft) initLeader() {
 		rf.matchIndex[i] = rf.lastIncludedIndex
 	}
 
-	for i := 1; i < len(rf.logs); i++ {
-		if rf.logs[i].Cmd == nil {
-			rf.MaxnilNum++
-		}
-	}
-
 	rf.turnToLeader = 1
 
 	DPrintf("主机：%d  initLeader完成", rf.me)
@@ -1187,7 +802,7 @@ func (rf *Raft) LeaderAction() {
 			// 3. Leader 初始化：如果刚刚通过选举成为 Leader (turnToLeader == 0)
 			// 需要执行新任 Leader 的初始化工作（如重置 nextIndex 和 matchIndex 数组）
 			if rf.turnToLeader == 0 {
-				rf.MaxnilNum = 0 // 重置某些定制化的空日志计数
+				//rf.MaxnilNum = 0 // 重置某些定制化的空日志计数
 				rf.initLeader()  // 初始化 Leader 专属的易失性状态
 				go rf.checkCommit()
 			}
@@ -1201,9 +816,6 @@ func (rf *Raft) LeaderAction() {
 			}
 			lastLoopTime = currentTime
 
-			// 4. 提交检查：开启一个新协程，去检查是否可以更新 commitIndex
-			// 🚨 【极其危险】：这里就是导致你 30 万个协程泄漏的源头！
-			//go rf.checkCommit()
 
 			// 5. 并发发送心跳准备
 			i := 0

@@ -555,262 +555,262 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 	}
 }
 
-// func TestBasic3A(t *testing.T) {
-// 	// Test: one client (3A) ...
-// 	GenericTest(t, "3A", 1, false, false, false, -1)
-// }
+func TestBasic3A(t *testing.T) {
+	// Test: one client (3A) ...
+	GenericTest(t, "3A", 1, false, false, false, -1)
+}
 
-// func TestConcurrent3A(t *testing.T) {
-// 	// Test: many clients (3A) ...
-// 	GenericTest(t, "3A", 5, false, false, false, -1)
-// }
+func TestConcurrent3A(t *testing.T) {
+	// Test: many clients (3A) ...
+	GenericTest(t, "3A", 5, false, false, false, -1)
+}
 
-// func TestUnreliable3A(t *testing.T) {
-// 	// Test: unreliable net, many clients (3A) ...
-// 	GenericTest(t, "3A", 5, true, false, false, -1)
-// }
+func TestUnreliable3A(t *testing.T) {
+	// Test: unreliable net, many clients (3A) ...
+	GenericTest(t, "3A", 5, true, false, false, -1)
+}
 
-// // TestUnreliableOneKey3A 测试在不可靠网络环境下，
-// // 多个客户端并发地对同一个键（key）执行 Append 操作的正确性（属于 Lab 3A 范畴）。
-// // 该测试验证 KV 服务在 leader 更换、网络丢包等异常情况下，
-// // 仍能保证操作的线性一致性（linearizability）和无重复执行（exactly-once 语义）。
-// func TestUnreliableOneKey3A(t *testing.T) {
-// 	// 定义集群中 Raft 节点数量为 3（最小多数派：2/3）
-// 	const nservers = 3
+// TestUnreliableOneKey3A 测试在不可靠网络环境下，
+// 多个客户端并发地对同一个键（key）执行 Append 操作的正确性（属于 Lab 3A 范畴）。
+// 该测试验证 KV 服务在 leader 更换、网络丢包等异常情况下，
+// 仍能保证操作的线性一致性（linearizability）和无重复执行（exactly-once 语义）。
+func TestUnreliableOneKey3A(t *testing.T) {
+	// 定义集群中 Raft 节点数量为 3（最小多数派：2/3）
+	const nservers = 3
 
-// 	// 创建一个测试配置（config）：
-// 	// - 启动 nservers 个 Raft 节点
-// 	// - 启用不可靠网络（模拟丢包、延迟）
-// 	// - -1 表示不启用日志快照（log 不会被截断）
-// 	cfg := make_config(t, nservers, true, -1)
-// 	// 测试结束后自动清理资源（停止所有节点、客户端等）
-// 	defer cfg.cleanup()
+	// 创建一个测试配置（config）：
+	// - 启动 nservers 个 Raft 节点
+	// - 启用不可靠网络（模拟丢包、延迟）
+	// - -1 表示不启用日志快照（log 不会被截断）
+	cfg := make_config(t, nservers, true, -1)
+	// 测试结束后自动清理资源（停止所有节点、客户端等）
+	defer cfg.cleanup()
 
-// 	// 创建一个客户端 ck，该客户端可连接到集群中任意节点
-// 	ck := cfg.makeClient(cfg.All())
+	// 创建一个客户端 ck，该客户端可连接到集群中任意节点
+	ck := cfg.makeClient(cfg.All())
 
-// 	// 记录测试开始日志，便于调试和追踪
-// 	cfg.begin("Test: concurrent append to same key, unreliable (3A)")
+	// 记录测试开始日志，便于调试和追踪
+	cfg.begin("Test: concurrent append to same key, unreliable (3A)")
 
-// 	// 初始化键 "k" 的值为空字符串，确保测试从干净状态开始
-// 	Put(cfg, ck, "k", "")
+	// 初始化键 "k" 的值为空字符串，确保测试从干净状态开始
+	Put(cfg, ck, "k", "")
 
-// 	// 定义并发客户端数量和每个客户端的 Append 操作次数
-// 	const nclient = 5 // 启动 5 个并发客户端
-// 	const upto = 10   // 每个客户端执行 10 次 Append
+	// 定义并发客户端数量和每个客户端的 Append 操作次数
+	const nclient = 5 // 启动 5 个并发客户端
+	const upto = 10   // 每个客户端执行 10 次 Append
 
-// 	// 启动 nclient 个并发客户端 goroutine，并等待它们全部完成
-// 	spawn_clients_and_wait(t, cfg, nclient, func(me int, myck *Clerk, t *testing.T) {
-// 		n := 0
-// 		for n < upto {
-// 			// 每个客户端向同一个键 "k" 追加唯一标识的字符串：
-// 			// 格式为 "x <client_id> <operation_index> y"
-// 			// 例如："x 2 5 y" 表示客户端 2 的第 5 次操作
-// 			Append(cfg, myck, "k", "x "+strconv.Itoa(me)+" "+strconv.Itoa(n)+" y")
-// 			n++
-// 		}
-// 	})
+	// 启动 nclient 个并发客户端 goroutine，并等待它们全部完成
+	spawn_clients_and_wait(t, cfg, nclient, func(me int, myck *Clerk, t *testing.T) {
+		n := 0
+		for n < upto {
+			// 每个客户端向同一个键 "k" 追加唯一标识的字符串：
+			// 格式为 "x <client_id> <operation_index> y"
+			// 例如："x 2 5 y" 表示客户端 2 的第 5 次操作
+			Append(cfg, myck, "k", "x "+strconv.Itoa(me)+" "+strconv.Itoa(n)+" y")
+			n++
+		}
+	})
 
-// 	// 构建期望的每客户端操作次数列表（用于后续验证）
-// 	// 因为每个客户端都执行了 `upto` 次 Append，所以 counts = [10, 10, 10, 10, 10]
-// 	var counts []int
-// 	for i := 0; i < nclient; i++ {
-// 		counts = append(counts, upto)
-// 	}
+	// 构建期望的每客户端操作次数列表（用于后续验证）
+	// 因为每个客户端都执行了 `upto` 次 Append，所以 counts = [10, 10, 10, 10, 10]
+	var counts []int
+	for i := 0; i < nclient; i++ {
+		counts = append(counts, upto)
+	}
 
-// 	// 所有客户端操作完成后，读取最终的键 "k" 的值
-// 	vx := Get(cfg, ck, "k")
+	// 所有客户端操作完成后，读取最终的键 "k" 的值
+	vx := Get(cfg, ck, "k")
 
-// 	// 验证最终值是否包含每个客户端恰好 `upto` 次 Append 的内容，
-// 	// 且操作顺序满足线性一致性（不允许丢失、重复或乱序到违反因果）
-// 	// checkConcurrentAppends 会解析 vx 字符串，统计各客户端操作出现次数
-// 	checkConcurrentAppends(t, vx, counts)
+	// 验证最终值是否包含每个客户端恰好 `upto` 次 Append 的内容，
+	// 且操作顺序满足线性一致性（不允许丢失、重复或乱序到违反因果）
+	// checkConcurrentAppends 会解析 vx 字符串，统计各客户端操作出现次数
+	checkConcurrentAppends(t, vx, counts)
 
-// 	// 记录测试结束日志
-// 	cfg.end()
-// }
+	// 记录测试结束日志
+	cfg.end()
+}
 
-// // // Submit a request in the minority partition and check that the requests
-// // // doesn't go through until the partition heals.  The leader in the original
-// // // network ends up in the minority partition.
-// // // TestOnePartition3A 测试在网络分区（network partition）场景下，
-// // // Raft 集群的多数派（majority）能否继续提供服务，而少数派（minority）是否被正确阻塞，
-// // // 以及在分区恢复后系统能否恢复正常并保证一致性（属于 Lab 3A 的核心容错测试）。
-// func TestOnePartition3A(t *testing.T) {
-// 	// 启动一个包含 5 个节点的 Raft 集群（奇数节点便于划分为多数/少数）
-// 	const nservers = 5
-// 	cfg := make_config(t, nservers, false, -1) // 不启用不可靠网络（unreliable=false），不启用快照
-// 	defer cfg.cleanup()                        // 测试结束自动清理资源
+// // Submit a request in the minority partition and check that the requests
+// // doesn't go through until the partition heals.  The leader in the original
+// // network ends up in the minority partition.
+// // TestOnePartition3A 测试在网络分区（network partition）场景下，
+// // Raft 集群的多数派（majority）能否继续提供服务，而少数派（minority）是否被正确阻塞，
+// // 以及在分区恢复后系统能否恢复正常并保证一致性（属于 Lab 3A 的核心容错测试）。
+func TestOnePartition3A(t *testing.T) {
+	// 启动一个包含 5 个节点的 Raft 集群（奇数节点便于划分为多数/少数）
+	const nservers = 5
+	cfg := make_config(t, nservers, false, -1) // 不启用不可靠网络（unreliable=false），不启用快照
+	defer cfg.cleanup()                        // 测试结束自动清理资源
 
-// 	// 创建一个全局客户端，可连接任意节点
-// 	ck := cfg.makeClient(cfg.All())
+	// 创建一个全局客户端，可连接任意节点
+	ck := cfg.makeClient(cfg.All())
 
-// 	// 初始化键 "1" 的值为 "13"
-// 	Put(cfg, ck, "1", "13")
+	// 初始化键 "1" 的值为 "13"
+	Put(cfg, ck, "1", "13")
 
-// 	// =============== 第一阶段：验证多数派能正常推进 ===============
-// 	cfg.begin("Test: progress in majority (3A)")
+	// =============== 第一阶段：验证多数派能正常推进 ===============
+	cfg.begin("Test: progress in majority (3A)")
 
-// 	// 将 5 个节点划分为两个分区：
-// 	// - p1: 包含 3 个节点（多数派，可形成 quorum）
-// 	// - p2: 包含 2 个节点（少数派，无法选举 leader 或提交日志）
-// 	p1, p2 := cfg.make_partition()
-// 	cfg.partition(p1, p2) // 实施网络隔离，p1 和 p2 之间无法通信
+	// 将 5 个节点划分为两个分区：
+	// - p1: 包含 3 个节点（多数派，可形成 quorum）
+	// - p2: 包含 2 个节点（少数派，无法选举 leader 或提交日志）
+	p1, p2 := cfg.make_partition()
+	cfg.partition(p1, p2) // 实施网络隔离，p1 和 p2 之间无法通信
 
-// 	// 为每个分区创建专用客户端：
-// 	ckp1 := cfg.makeClient(p1)  // 仅连接 p1（多数派）
-// 	ckp2a := cfg.makeClient(p2) // 仅连接 p2（少数派）
-// 	ckp2b := cfg.makeClient(p2) // 另一个连接 p2 的客户端（用于并发测试）
+	// 为每个分区创建专用客户端：
+	ckp1 := cfg.makeClient(p1)  // 仅连接 p1（多数派）
+	ckp2a := cfg.makeClient(p2) // 仅连接 p2（少数派）
+	ckp2b := cfg.makeClient(p2) // 另一个连接 p2 的客户端（用于并发测试）
 
-// 	// 通过多数派客户端写入新值 "14"
-// 	Put(cfg, ckp1, "1", "14")
-// 	// 验证读取结果为 "14" —— 说明多数派仍可正常处理请求
-// 	check(cfg, t, ckp1, "1", "14")
+	// 通过多数派客户端写入新值 "14"
+	Put(cfg, ckp1, "1", "14")
+	// 验证读取结果为 "14" —— 说明多数派仍可正常处理请求
+	check(cfg, t, ckp1, "1", "14")
 
-// 	cfg.end()
+	cfg.end()
 
-// 	// =============== 第二阶段：验证少数派无法推进 ===============
-// 	cfg.begin("Test: no progress in minority (3A)")
+	// =============== 第二阶段：验证少数派无法推进 ===============
+	cfg.begin("Test: no progress in minority (3A)")
 
-// 	// 启动两个并发 goroutine，尝试在少数派 p2 上执行操作：
-// 	done0 := make(chan bool)
-// 	done1 := make(chan bool)
+	// 启动两个并发 goroutine，尝试在少数派 p2 上执行操作：
+	done0 := make(chan bool)
+	done1 := make(chan bool)
 
-// 	// goroutine 1: 尝试在 p2 上 Put("1", "15")
-// 	go func() {
-// 		Put(cfg, ckp2a, "1", "15")
-// 		done0 <- true
-// 	}()
+	// goroutine 1: 尝试在 p2 上 Put("1", "15")
+	go func() {
+		Put(cfg, ckp2a, "1", "15")
+		done0 <- true
+	}()
 
-// 	// goroutine 2: 尝试在 p2 上 Get("1")
-// 	go func() {
-// 		Get(cfg, ckp2b, "1")
-// 		done1 <- true
-// 	}()
+	// goroutine 2: 尝试在 p2 上 Get("1")
+	go func() {
+		Get(cfg, ckp2b, "1")
+		done1 <- true
+	}()
 
-// 	// 等待最多 1 秒：
-// 	// - 如果任一操作完成，说明少数派错误地提供了服务（违反 Raft 安全性），测试失败
-// 	select {
-// 	case <-done0:
-// 		t.Fatalf("Put in minority completed") // 少数派不应完成写入
-// 	case <-done1:
-// 		t.Fatalf("Get in minority completed") // 少数派也不应完成读取（因无有效 leader）
-// 	case <-time.After(time.Second):
-// 		// 预期行为：两个操作都因无法形成 quorum 而阻塞（超时未完成）
-// 	}
+	// 等待最多 1 秒：
+	// - 如果任一操作完成，说明少数派错误地提供了服务（违反 Raft 安全性），测试失败
+	select {
+	case <-done0:
+		t.Fatalf("Put in minority completed") // 少数派不应完成写入
+	case <-done1:
+		t.Fatalf("Get in minority completed") // 少数派也不应完成读取（因无有效 leader）
+	case <-time.After(time.Second):
+		// 预期行为：两个操作都因无法形成 quorum 而阻塞（超时未完成）
+	}
 
-// 	// 再次验证多数派状态未受影响，值仍为 "14"
-// 	check(cfg, t, ckp1, "1", "14")
-// 	// 并在多数派上继续写入 "16"
-// 	Put(cfg, ckp1, "1", "16")
-// 	check(cfg, t, ckp1, "1", "16")
+	// 再次验证多数派状态未受影响，值仍为 "14"
+	check(cfg, t, ckp1, "1", "14")
+	// 并在多数派上继续写入 "16"
+	Put(cfg, ckp1, "1", "16")
+	check(cfg, t, ckp1, "1", "16")
 
-// 	cfg.end()
+	cfg.end()
 
-// 	// =============== 第三阶段：验证分区恢复后系统一致性 ===============
-// 	cfg.begin("Test: completion after heal (3A)")
+	// =============== 第三阶段：验证分区恢复后系统一致性 ===============
+	cfg.begin("Test: completion after heal (3A)")
 
-// 	// 恢复全网连通性：所有节点重新互相通信
-// 	cfg.ConnectAll()
-// 	// 更新客户端连接，使其可访问所有节点
-// 	cfg.ConnectClient(ckp2a, cfg.All())
-// 	cfg.ConnectClient(ckp2b, cfg.All())
+	// 恢复全网连通性：所有节点重新互相通信
+	cfg.ConnectAll()
+	// 更新客户端连接，使其可访问所有节点
+	cfg.ConnectClient(ckp2a, cfg.All())
+	cfg.ConnectClient(ckp2b, cfg.All())
 
-// 	// 等待足够时间让新 leader 选举完成（至少一个 election timeout）
-// 	time.Sleep(electionTimeout)
+	// 等待足够时间让新 leader 选举完成（至少一个 election timeout）
+	time.Sleep(electionTimeout)
 
-// 	// 此时，之前在 minority 中阻塞的 Put("1", "15") 应该能够完成（因为集群已恢复）
-// 	select {
-// 	case <-done0:
-// 		// 预期：Put 完成
-// 	case <-time.After(30 * 100 * time.Millisecond): // 3 秒
-// 		t.Fatalf("Put did not complete")
-// 	}
+	// 此时，之前在 minority 中阻塞的 Put("1", "15") 应该能够完成（因为集群已恢复）
+	select {
+	case <-done0:
+		// 预期：Put 完成
+	case <-time.After(30 * 100 * time.Millisecond): // 3 秒
+		t.Fatalf("Put did not complete")
+	}
 
-// 	// 同样，之前阻塞的 Get 也应完成
-// 	select {
-// 	case <-done1:
-// 	case <-time.After(30 * 100 * time.Millisecond):
-// 		t.Fatalf("Get did not complete")
-// 	default:
-// 	}
+	// 同样，之前阻塞的 Get 也应完成
+	select {
+	case <-done1:
+	case <-time.After(30 * 100 * time.Millisecond):
+		t.Fatalf("Get did not complete")
+	default:
+	}
 
-// 	// 关键验证：最终值应为 "15"
-// 	// 为什么不是 "16"？
-// 	// 注意：Put("1", "15") 是在 Put("1", "16") **之前**发起的（虽然被阻塞），
-// 	// 但在分区恢复后，它可能被新 leader 接收并提交。
-// 	// 然而，**更关键的是：该测试假设 Put("1", "15") 最终被提交**，
-// 	// 而之前的 "16" 可能因 leader 切换、日志冲突等原因被覆盖或未 commit。
-// 	//
-// 	// 实际上，MIT 6.824 的测试框架中，**在分区期间未完成的请求，
-// 	// 在恢复后重试时会被视为新请求**。但此处 `ckp2a` 是同一个 Clerk，
-// 	// 会携带相同的 ClientID 和 SeqNum，因此 Put("15") 会被去重或按序执行。
-// 	//
-// 	// 不过，根据原始 6.824 测试逻辑，此处 **预期最终值为 "15"**，
-// 	// 意味着 Put("15") 在恢复后成功提交，且覆盖了 "16" ——
-// 	// 这通常是因为 Put("16") 虽然在多数派成功，但在后续 leader 切换中，
-// 	// 若新 leader 来自包含 Put("15") 请求的路径（且其日志 term 更高），
-// 	// 可能导致 "16" 被回滚（这是 Raft 允许的，只要未提交到状态机）。
-// 	//
-// 	// 但更合理的解释是：**Put("16") 已提交（applied），所以不应被覆盖**。
-// 	// 实际上，官方测试中此处的预期值应为 "16"，但原测试代码写的是 "15"，
-// 	// 这是一个已知的“陷阱”—— 它依赖于 Put("15") 在恢复后**重新提交并覆盖**。
-// 	//
-// 	// ⚠️ 注意：正确实现应保证 **一旦 Put("16") 被客户端确认，就不能被回滚**。
-// 	// 因此，如果你的实现最终值是 "16"，但测试期望 "15"，可能会失败。
-// 	// 然而，在 MIT 6.824 官方 Lab 3 中，此测试的最终 check 确实是 "15"，
-// 	// 其隐含前提是：Put("16") **并未真正提交到状态机**（可能因 leader 变更未 commit），
-// 	// 或 Put("15") 在恢复后以更高 term 提交并成为最终值。
-// 	//
-// 	// 实际上，更安全的理解是：**该测试要求你的系统在恢复后，
-// 	// 能正确处理之前挂起的请求，并保证全局顺序一致**。
-// 	// 如果你的实现通过了，说明一致性模型正确。
-// 	check(cfg, t, ck, "1", "15")
+	// 关键验证：最终值应为 "15"
+	// 为什么不是 "16"？
+	// 注意：Put("1", "15") 是在 Put("1", "16") **之前**发起的（虽然被阻塞），
+	// 但在分区恢复后，它可能被新 leader 接收并提交。
+	// 然而，**更关键的是：该测试假设 Put("1", "15") 最终被提交**，
+	// 而之前的 "16" 可能因 leader 切换、日志冲突等原因被覆盖或未 commit。
+	//
+	// 实际上，MIT 6.824 的测试框架中，**在分区期间未完成的请求，
+	// 在恢复后重试时会被视为新请求**。但此处 `ckp2a` 是同一个 Clerk，
+	// 会携带相同的 ClientID 和 SeqNum，因此 Put("15") 会被去重或按序执行。
+	//
+	// 不过，根据原始 6.824 测试逻辑，此处 **预期最终值为 "15"**，
+	// 意味着 Put("15") 在恢复后成功提交，且覆盖了 "16" ——
+	// 这通常是因为 Put("16") 虽然在多数派成功，但在后续 leader 切换中，
+	// 若新 leader 来自包含 Put("15") 请求的路径（且其日志 term 更高），
+	// 可能导致 "16" 被回滚（这是 Raft 允许的，只要未提交到状态机）。
+	//
+	// 但更合理的解释是：**Put("16") 已提交（applied），所以不应被覆盖**。
+	// 实际上，官方测试中此处的预期值应为 "16"，但原测试代码写的是 "15"，
+	// 这是一个已知的“陷阱”—— 它依赖于 Put("15") 在恢复后**重新提交并覆盖**。
+	//
+	// ⚠️ 注意：正确实现应保证 **一旦 Put("16") 被客户端确认，就不能被回滚**。
+	// 因此，如果你的实现最终值是 "16"，但测试期望 "15"，可能会失败。
+	// 然而，在 MIT 6.824 官方 Lab 3 中，此测试的最终 check 确实是 "15"，
+	// 其隐含前提是：Put("16") **并未真正提交到状态机**（可能因 leader 变更未 commit），
+	// 或 Put("15") 在恢复后以更高 term 提交并成为最终值。
+	//
+	// 实际上，更安全的理解是：**该测试要求你的系统在恢复后，
+	// 能正确处理之前挂起的请求，并保证全局顺序一致**。
+	// 如果你的实现通过了，说明一致性模型正确。
+	check(cfg, t, ck, "1", "15")
 
-// 	cfg.end()
-// }
+	cfg.end()
+}
 
-// func TestManyPartitionsOneClient3A(t *testing.T) {
-// 	// Test: partitions, one client (3A) ...
-// 	GenericTest(t, "3A", 1, false, false, true, -1)
-// }
+func TestManyPartitionsOneClient3A(t *testing.T) {
+	// Test: partitions, one client (3A) ...
+	GenericTest(t, "3A", 1, false, false, true, -1)
+}
 
-// func TestManyPartitionsManyClients3A(t *testing.T) {
-// 	// Test: partitions, many clients (3A) ...
-// 	GenericTest(t, "3A", 5, false, false, true, -1)
-// }
+func TestManyPartitionsManyClients3A(t *testing.T) {
+	// Test: partitions, many clients (3A) ...
+	GenericTest(t, "3A", 5, false, false, true, -1)
+}
 
-// // --------------------------------------------
-// func TestPersistOneClient3A(t *testing.T) {
-// 	// Test: restarts, one client (3A) ...
-// 	GenericTest(t, "3A", 1, false, true, false, -1)
-// }
+// --------------------------------------------
+func TestPersistOneClient3A(t *testing.T) {
+	// Test: restarts, one client (3A) ...
+	GenericTest(t, "3A", 1, false, true, false, -1)
+}
 
-// func TestPersistConcurrent3A(t *testing.T) {
-// 	// Test: restarts, many clients (3A) ...
-// 	GenericTest(t, "3A", 5, false, true, false, -1)
-// }
+func TestPersistConcurrent3A(t *testing.T) {
+	// Test: restarts, many clients (3A) ...
+	GenericTest(t, "3A", 5, false, true, false, -1)
+}
 
-// func TestPersistConcurrentUnreliable3A(t *testing.T) {
-// 	// Test: unreliable net, restarts, many clients (3A) ...
-// 	GenericTest(t, "3A", 5, true, true, false, -1)
-// }
+func TestPersistConcurrentUnreliable3A(t *testing.T) {
+	// Test: unreliable net, restarts, many clients (3A) ...
+	GenericTest(t, "3A", 5, true, true, false, -1)
+}
 
-// func TestPersistPartition3A(t *testing.T) {
-// 	// Test: restarts, partitions, many clients (3A) ...
-// 	GenericTest(t, "3A", 5, false, true, true, -1)
-// }
+func TestPersistPartition3A(t *testing.T) {
+	// Test: restarts, partitions, many clients (3A) ...
+	GenericTest(t, "3A", 5, false, true, true, -1)
+}
 
-// func TestPersistPartitionUnreliable3A(t *testing.T) {
-// 	// Test: unreliable net, restarts, partitions, many clients (3A) ...
-// 	GenericTest(t, "3A", 5, true, true, true, -1)
-// }
+func TestPersistPartitionUnreliable3A(t *testing.T) {
+	// Test: unreliable net, restarts, partitions, many clients (3A) ...
+	GenericTest(t, "3A", 5, true, true, true, -1)
+}
 
-// // last
-// func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
-// 	// Test: unreliable net, restarts, partitions, linearizability checks (3A) ...
-// 	GenericTestLinearizability(t, "3A", 15, 7, true, true, true, -1)
-// }
+// last
+func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
+	// Test: unreliable net, restarts, partitions, linearizability checks (3A) ...
+	GenericTestLinearizability(t, "3A", 15, 7, true, true, true, -1)
+}
 
 
 //------------
@@ -905,67 +905,92 @@ func TestSnapshotRPC3B(t *testing.T) {
 	cfg.end()
 }
 
-// // are the snapshots not too huge? 500 bytes is a generous bound for the
-// // operations we're doing here.
-// func TestSnapshotSize3B(t *testing.T) {
-// 	const nservers = 3
-// 	maxraftstate := 1000
-// 	maxsnapshotstate := 500
-// 	cfg := make_config(t, nservers, false, maxraftstate)
-// 	defer cfg.cleanup()
+//
+// are the snapshots not too huge? 500 bytes is a generous bound for the
+// operations we're doing here.
+// 测试目的：快照的体积是否足够小？对于本测试中的操作，500 字节已经是一个非常宽容的上限了。
+//
+func TestSnapshotSize3B(t *testing.T) {
+	const nservers = 3
+	// 触发打快照的 Raft 状态大小阈值：1000 字节
+	maxraftstate := 1000
+	// 本测试的核心严格限制：最终生成的快照数据 (Snapshot) 绝对不能超过 500 字节！
+	maxsnapshotstate := 500 
+	
+	// 初始化一个包含 3 个节点的集群环境
+	cfg := make_config(t, nservers, false, maxraftstate)
+	defer cfg.cleanup()
 
-// 	ck := cfg.makeClient(cfg.All())
+	// 创建一个可以向所有节点发送请求的客户端
+	ck := cfg.makeClient(cfg.All())
 
-// 	cfg.begin("Test: snapshot size is reasonable (3B)")
+	cfg.begin("Test: snapshot size is reasonable (3B)")
 
-// 	for i := 0; i < 200; i++ {
-// 		Put(cfg, ck, "x", "0")
-// 		check(cfg, t, ck, "x", "0")
-// 		Put(cfg, ck, "x", "1")
-// 		check(cfg, t, ck, "x", "1")
-// 	}
+	// 【核心高压测试区】
+	// 循环 200 次，每次写入 "x"="0"，校验，再写入 "x"="1"，校验。
+	// 这意味着客户端总共发送了 400 条修改命令，Raft 的日志至少会增长 400 条。
+	// 这 400 条日志的总体积绝对远超 maxraftstate (1000 字节)，
+	// 必然会疯狂触发你的 kvserver 调用 rf.Snapshot()。
+	for i := 0; i < 200; i++ {
+		Put(cfg, ck, "x", "0")
+		check(cfg, t, ck, "x", "0")
+		Put(cfg, ck, "x", "1")
+		check(cfg, t, ck, "x", "1")
+	}
 
-// 	// check that servers have thrown away most of their log entries
-// 	sz := cfg.LogSize()
-// 	if sz > 8*maxraftstate {
-// 		t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
-// 	}
+	// 【检查点 1：Raft 日志是否被正常截断】
+	// cfg.LogSize() 获取当前底层 Raft 的持久化文件大小（主要由 currentTerm, votedFor 和残留的 logs 组成）。
+	// 正常情况下，你的代码应该已经打过多次快照并扔掉了大部分旧日志。
+	// 8 * maxraftstate 依然是一个很宽容的上限，如果超过了，说明你的 Raft 根本没丢弃日志。
+	sz := cfg.LogSize()
+	if sz > 8*maxraftstate {
+		t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
+	}
 
-// 	// check that the snapshots are not unreasonably large
-// 	ssz := cfg.SnapshotSize()
-// 	if ssz > maxsnapshotstate {
-// 		t.Fatalf("snapshot too large (%v > %v)", ssz, maxsnapshotstate)
-// 	}
+	// 【检查点 2（本测试真正的主角）：快照本身是否过大】
+	// cfg.SnapshotSize() 获取你的 kvserver 传给 Raft 的快照 []byte 的大小。
+	// 思考一下：经历了 400 次写入后，此时 kvserver 内存里的真实状态是什么？
+	// 1. 一个 KV 字典，里面只有一对数据：{"x": "1"} (因为前面的被覆盖了)
+	// 2. 一个客户端去重表，记录了当前这个 ck 客户端的最新 Sequence Number
+	// 把这两个极小的数据结构 GOB 编码后，几十个字节就顶天了。
+	// 如果 ssz 超过了 500 字节，说明你的快照里混入了历史垃圾数据！
+	ssz := cfg.SnapshotSize()
+	if ssz > maxsnapshotstate {
+		t.Fatalf("snapshot too large (%v > %v)", ssz, maxsnapshotstate)
+	}
 
-// 	cfg.end()
-// }
+	cfg.end()
+}
 
-// func TestSnapshotRecover3B(t *testing.T) {
-// 	// Test: restarts, snapshots, one client (3B) ...
-// 	GenericTest(t, "3B", 1, false, true, false, 1000)
-// }
+// TestSnapshotRecover3B 测试核心目标：崩溃重启与快照恢复。
+// 当服务器频繁宕机并重启时，它能否正确地从磁盘读取快照，
+// 并无缝衔接恢复其 KV 数据库和 Raft 状态？
+func TestSnapshotRecover3B(t *testing.T) {
+	// Test: restarts, snapshots, one client (3B) ...
+	GenericTest(t, "3B", 1, false, true, false, 1000)
+}
 
-// func TestSnapshotRecoverManyClients3B(t *testing.T) {
-// 	// Test: restarts, snapshots, many clients (3B) ...
-// 	GenericTest(t, "3B", 20, false, true, false, 1000)
-// }
+func TestSnapshotRecoverManyClients3B(t *testing.T) {
+	// Test: restarts, snapshots, many clients (3B) ...
+	GenericTest(t, "3B", 20, false, true, false, 1000)
+}
 
-// func TestSnapshotUnreliable3B(t *testing.T) {
-// 	// Test: unreliable net, snapshots, many clients (3B) ...
-// 	GenericTest(t, "3B", 5, true, false, false, 1000)
-// }
+func TestSnapshotUnreliable3B(t *testing.T) {
+	// Test: unreliable net, snapshots, many clients (3B) ...
+	GenericTest(t, "3B", 5, true, false, false, 1000)
+}
 
-// func TestSnapshotUnreliableRecover3B(t *testing.T) {
-// 	// Test: unreliable net, restarts, snapshots, many clients (3B) ...
-// 	GenericTest(t, "3B", 5, true, true, false, 1000)
-// }
+func TestSnapshotUnreliableRecover3B(t *testing.T) {
+	// Test: unreliable net, restarts, snapshots, many clients (3B) ...
+	GenericTest(t, "3B", 5, true, true, false, 1000)
+}
 
-// func TestSnapshotUnreliableRecoverConcurrentPartition3B(t *testing.T) {
-// 	// Test: unreliable net, restarts, partitions, snapshots, many clients (3B) ...
-// 	GenericTest(t, "3B", 5, true, true, true, 1000)
-// }
+func TestSnapshotUnreliableRecoverConcurrentPartition3B(t *testing.T) {
+	// Test: unreliable net, restarts, partitions, snapshots, many clients (3B) ...
+	GenericTest(t, "3B", 5, true, true, true, 1000)
+}
 
-// func TestSnapshotUnreliableRecoverConcurrentPartitionLinearizable3B(t *testing.T) {
-// 	// Test: unreliable net, restarts, partitions, snapshots, linearizability checks (3B) ...
-// 	GenericTestLinearizability(t, "3B", 15, 7, true, true, true, 1000)
-// }
+func TestSnapshotUnreliableRecoverConcurrentPartitionLinearizable3B(t *testing.T) {
+	// Test: unreliable net, restarts, partitions, snapshots, linearizability checks (3B) ...
+	GenericTestLinearizability(t, "3B", 15, 7, true, true, true, 1000)
+}

@@ -25,18 +25,18 @@ type RequestVoteReply struct {
 // RequestVote 处理来自其他 Candidate 节点的拉票请求 (RPC 接收端)
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 加锁保护节点状态（当前任期、投票记录、日志等）的并发读写
-	rf.mu.Lock()         
+	rf.mu.Lock()
 	defer rf.mu.Unlock() // 确保函数返回时释放锁
-	
+
 	DPrintf("主机：%d,RequestVote启动\n", rf.me)
-	
+
 	// 【⚠️ 隐患预警 1】无条件重置选举定时器（见下方解析）
-	rf.updateTime() 
-	
+	rf.updateTime()
+
 	// 获取当前节点自身日志的最后一条记录的索引和任期
 	lastLogIndex := rf.lastLogIndex()
 	lastLogTerm := rf.termAt(lastLogIndex)
-	
+
 	// ==========================================================
 	// 场景一：候选人的任期比我新 (Candidate 发现了新大陆)
 	// ==========================================================
@@ -46,25 +46,25 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.turnToLeader = 0
 		DPrintf("主机%d转为follower-收到投票请求时时\n", rf.me)
 		rf.currentTerm = args.Term
-		
+
 		// 检查候选人的日志是否至少和自己一样新 (Raft 选举限制: Election Restriction)
 		// 拒绝投票条件：我的最后日志任期更大，或者任期一样但我的日志更长
 		if lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
 			reply.VoteGranted = false // 候选人日志太旧，拒绝投票
 			rf.votedFor = -1          // 虽然更新了任期，但票没投出去，重置投票记录
 		} else {
-			reply.VoteGranted = true  // 候选人日志足够新，同意投票
+			reply.VoteGranted = true       // 候选人日志足够新，同意投票
 			rf.votedFor = args.CandidateId // 记录把票投给了谁
 		}
 		reply.Term = rf.currentTerm // 返回自己更新后的最新任期
 		rf.persist()                // 状态改变，落盘持久化
-		
-	// ==========================================================
-	// 场景二：候选人的任期和我当前任期一样 (大家在同一届选举中竞争)
-	// ==========================================================
+
+		// ==========================================================
+		// 场景二：候选人的任期和我当前任期一样 (大家在同一届选举中竞争)
+		// ==========================================================
 	} else if rf.currentTerm == args.Term {
 		reply.Term = rf.currentTerm
-		
+
 		// 1. 如果之前已经把票投给这个候选人了（RPC 幂等性，可能因为网络重传）
 		if rf.votedFor == args.CandidateId {
 			reply.VoteGranted = true
@@ -73,8 +73,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			DPrintf("主机%d转为follower-voteFor不为空时\n", rf.me)
 			rf.votedFor = args.CandidateId
 			rf.persist()
-			
-		// 2. 如果在当前任期还没有把票投给任何人
+
+			// 2. 如果在当前任期还没有把票投给任何人
 		} else if rf.votedFor == -1 {
 			// 再次检查日志新旧程度
 			// 【⚠️ 隐患预警 2】这里使用了 >=，这是一个逻辑错误（见下方解析）
@@ -83,19 +83,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				rf.votedFor = -1
 				rf.persist()
 			} else {
-				reply.VoteGranted = true  // 同意投票
+				reply.VoteGranted = true // 同意投票
 				rf.votedFor = args.CandidateId
 				rf.persist()
 			}
-			
-		// 3. 在当前任期，票已经投给别人了（一票多投限制）
+
+			// 3. 在当前任期，票已经投给别人了（一票多投限制）
 		} else {
 			reply.VoteGranted = false // 拒绝投票
 		}
-		
-	// ==========================================================
-	// 场景三：候选人的任期比我还老 (历史遗留的 Candidate 发来的请求)
-	// ==========================================================
+
+		// ==========================================================
+		// 场景三：候选人的任期比我还老 (历史遗留的 Candidate 发来的请求)
+		// ==========================================================
 	} else {
 		reply.Term = rf.currentTerm // 告诉他最新的任期，让他赶紧退位
 		reply.VoteGranted = false   // 果断拒绝
@@ -184,7 +184,7 @@ func (rf *Raft) FollowerAction() {
 			wg.Wait() // 等待所有正在进行的 RPC 请求结束
 			return
 		}
-		
+
 		// 2. 如果当前节点已经是 Leader，则不需要进行选举超时检查
 		// 这里选择短暂休眠交出 CPU 时间片。Leader 的心跳通常由另一个独立的协程负责发送。
 		if rf.state == Leader {
@@ -193,7 +193,7 @@ func (rf *Raft) FollowerAction() {
 			rf.mu.Lock()
 			// 3. 计算距离上一次收到有效消息（Leader 心跳、投票请求等）经过的时间
 			elapsed := time.Since(rf.lastMessageTime)
-			
+
 			// 4. 判断是否发生选举超时
 			if elapsed <= rf.ElectionTimeout {
 				rf.mu.Unlock()
@@ -212,12 +212,12 @@ func (rf *Raft) FollowerAction() {
 				rf.votedFor = rf.me                 // 首先把票投给自己
 				rf.persist()                        // 持久化当前任期和投票信息，防止宕机重启后状态丢失
 				rf.mu.Unlock()
-				
+
 				// 6. 准备发送拉票请求 (RequestVote RPC)
 				i := 0
 				agreedCandidateNum := 1 // 初始票数为 1（自己投给自己的一票）
 				wg = sync.WaitGroup{}
-				
+
 				for i = 0; i < len(rf.peers); i++ {
 					// 如果在发送请求期间状态发生了变化（例如收到了更高任期的心跳），则终止拉票
 					if rf.state != Candidate {
@@ -235,12 +235,12 @@ func (rf *Raft) FollowerAction() {
 						go rf.sendRequest(i, &agreedCandidateNum, &wg)
 					}
 				}
-				
+
 				// 7. 等待所有拉票 RPC 返回
 				wg.Wait()
-				
+
 				// =================== 计票与状态结算 ===================
-				
+
 				// 8. 选举失败：未获得大多数选票（<= 节点总数的一半），且状态仍为 Candidate
 				if agreedCandidateNum*2 <= len(rf.peers) && rf.state == Candidate {
 					DPrintf("主机：%d,上一次选举失败,重新产生超时时间，\n失败原因agreedCandidateNum=%d, rf.state=%d", rf.me, agreedCandidateNum, rf.state)
@@ -248,18 +248,17 @@ func (rf *Raft) FollowerAction() {
 					rf.lastMessageTime = time.Now()
 					rf.ElectionTimeout = rf.randomTimeout()
 				}
-				
+
 				// 9. 选举成功：获得大多数选票（> 节点总数的一半），且状态仍为 Candidate
 				if agreedCandidateNum*2 > len(rf.peers) && rf.state == Candidate {
 					rf.mu.Lock()
 					DPrintf("主机：%d成为leader,当前Term：%d\n", rf.me, rf.currentTerm)
 					rf.state = Leader
-					
+
 					// 10. Raft 核心细节：Leader 上任时追加一条 No-op（空操作）日志
 					// 这是为了能够安全地提交之前任期遗留下来的日志
 					rf.logs = append(rf.logs, one_log{Term: rf.currentTerm, Index: rf.lastLogIndex() + 1, Committed: false})
-					rf.committed = append(rf.committed, false)
-					rf.turnToLeader = 0 
+					rf.turnToLeader = 0
 					rf.persist() // 持久化新追加的日志
 					rf.mu.Unlock()
 				}
