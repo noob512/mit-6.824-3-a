@@ -74,12 +74,13 @@ func (rf *Raft) applyLog() {
 			// 计算向上传递的 CommandIndex，减去空日志偏移量，确保索引连续
 			newApplyMsg.CommandIndex = rf.realToPublicIndex(rf.lastApplied)
 			newApplyMsg.CommandValid = true
+			commandIndex := newApplyMsg.CommandIndex
+			command := rf.logs[offset].Cmd
 
-			// 🌟 致命阻塞风险点：直接发送到 applyCh
+			rf.mu.Unlock()
 			rf.applyCh <- *newApplyMsg
 
-			DPrintf("主机：%d中索引为%d的日志提交完成,提交内容为：%v\n", rf.me, newApplyMsg.CommandIndex, rf.logs[offset].Cmd)
-			rf.mu.Unlock()
+			DPrintf("主机：%d中索引为%d的日志提交完成,提交内容为：%v\n", rf.me, commandIndex, command)
 		}
 	}
 }
@@ -216,7 +217,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.applyCh <- applyMsg
 	}()
 }
-
 
 // AppendEntries 是 Follower 或 Candidate 接收 Leader 发来的心跳或日志追加请求的 RPC 处理器。
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -388,7 +388,6 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 	return ok
 }
 
-
 // HandleAppendEntriesReply 处理从 Follower 返回的 AppendEntries 响应。
 // i: Follower 的节点下标
 // args: 发送时的原始请求参数
@@ -503,7 +502,6 @@ func (rf *Raft) HandleAppendEntriesReply(i int, args *AppendEntriesArgs, reply *
 		rf.persist()
 	}
 }
-
 
 // sendEntries 是 Leader 为单个 Follower (下标为 i) 同步日志或发送快照的函数。
 // 通常作为 Goroutine 并发运行。wg 用于通知主调用协程该发送任务已结束。
@@ -669,7 +667,6 @@ func (rf *Raft) sendEntries(i int, wg *sync.WaitGroup, term int) {
 	}
 }
 
-
 // checkCommit 是一个在 Leader 当选后通常以后台协程 (goroutine) 运行的函数。
 // 它的职责是：不断检查 matchIndex 数组，看是否有一条当前任期的新日志已经被复制到了多数派节点，
 // 如果是，则推进 Leader 的 commitIndex。
@@ -803,7 +800,7 @@ func (rf *Raft) LeaderAction() {
 			// 需要执行新任 Leader 的初始化工作（如重置 nextIndex 和 matchIndex 数组）
 			if rf.turnToLeader == 0 {
 				//rf.MaxnilNum = 0 // 重置某些定制化的空日志计数
-				rf.initLeader()  // 初始化 Leader 专属的易失性状态
+				rf.initLeader() // 初始化 Leader 专属的易失性状态
 				go rf.checkCommit()
 			}
 
@@ -815,7 +812,6 @@ func (rf *Raft) LeaderAction() {
 				DPrintf("主机：%d，LeaderAction 循环间隔: %v\n", rf.me, interval)
 			}
 			lastLoopTime = currentTime
-
 
 			// 5. 并发发送心跳准备
 			i := 0

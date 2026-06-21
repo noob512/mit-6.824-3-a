@@ -432,6 +432,9 @@ func (sm *ShardMaster) applier() {
 				
 				// 更新该客户端的去重记录，标记这个 CommandId 已经执行完毕
 				sm.lastApplied[op.ClientId] = op.CommandId
+				// 🟢 新增的日志打印：直观展示每次配置变更后的最终盘面
+				// DPrintf("[ShardMaster %d] 执行 %s 完毕 | ConfigNum: %d | Groups: %v | Shards 分配: %v\n", 
+				// 	sm.me, op.OpType, newConfig.Num, newConfig.Groups, newConfig.Shards)
 			}
 
 			// 3. 唤醒正在等待的 RPC Handler

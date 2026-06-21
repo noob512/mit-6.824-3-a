@@ -14,7 +14,10 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrTimeout     = "ErrTimeout"     // Raft 达成共识超时
+	ErrNotReady    = "ErrNotReady" // 🔴 新增：老组还没准备好移交数据（比如它自己还没演进到目标 Config）
 )
+
 
 type Err string
 
@@ -27,6 +30,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	CommandId int
+	ClientId int64
 }
 
 type PutAppendReply struct {
@@ -36,6 +41,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	CommandId int
+	ClientId int64
 }
 
 type GetReply struct {

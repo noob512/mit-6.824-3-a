@@ -1,0 +1,94 @@
+Test: static shards ...
+  ... Passed
+Test: join then leave ...
+2026/06/21 20:53:17 首次check成功
+2026/06/21 20:53:18 阶段三开始
+2026/06/21 20:53:19 阶段四开始
+2026/06/21 20:53:20 关机开始
+  ... Passed
+Test: snapshots, join, and leave ...
+2026/06/21 20:53:23 首次check
+2026/06/21 20:53:23 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:24 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:25 不断append
+2026/06/21 20:53:26 不断append
+2026/06/21 20:53:26 不断append
+2026/06/21 20:53:26 不断append
+2026/06/21 20:53:26 不断append
+2026/06/21 20:53:26 不断append
+2026/06/21 20:53:26 不断append
+2026/06/21 20:53:26 不断append
+2026/06/21 20:53:26 不断append
+2026/06/21 20:53:26 二次check
+2026/06/21 20:53:26 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:27 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:28 3-不断append
+2026/06/21 20:53:29 3-不断append
+2026/06/21 20:53:29 3-不断append
+2026/06/21 20:53:29 3-不断append
+2026/06/21 20:53:29 3-不断append
+2026/06/21 20:53:29 3-不断append
+  ... Passed
+Test: servers miss configuration changes...
+  ... Passed
+Test: concurrent puts and configuration changes...
+  ... Passed
+Test: more concurrent puts and configuration changes...
+  ... Passed
+Test: unreliable 1...
+  ... Passed
+Test: unreliable 2...
+  ... Passed
+Test: unreliable 3...
+  ... Passed
+Test: shard deletion (challenge 1) ...
+  ... Passed
+Test: concurrent configuration change and restart (challenge 1)...
+  ... Passed
+Test: unaffected shard access (challenge 2) ...
+  ... Passed
+Test: partial migration shard access (challenge 2) ...
+  ... Passed
+PASS
+ok  	_/home/ren/6.824-A/src/shardkv	131.006s

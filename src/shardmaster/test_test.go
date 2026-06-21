@@ -115,13 +115,13 @@ func TestBasic(t *testing.T) {
 
     // 创建一个长度为 6 的 Config 数组，用于记录整个测试过程中的历史配置快照
     cfa := make([]Config, 6)
-	DPrintf("准备query\n")
+
     // 获取系统的初始配置（Config 0），此时不应该有任何副本组
     cfa[0] = ck.Query(-1)
-	DPrintf("准备check\n")
+
     // 调用外部的 check 函数，验证当前活跃的副本组列表是否为空（[]int{}）
     check(t, []int{}, ck)
-	DPrintf("第一次check成功\n")
+
     // 声明第一个副本组的 GID 为 1
     var gid1 int = 1
     // 客户端发送 Join RPC，将 GID 1 以及其包含的 3 个服务器节点（x, y, z）加入集群
@@ -129,7 +129,7 @@ func TestBasic(t *testing.T) {
     // 验证当前集群确实只包含 gid1，且所有的分片都分配给了 gid1
 	
     check(t, []int{gid1}, ck)
-	DPrintf("第二次check成功\n")
+
     // 获取最新的配置（Config 1），存入历史记录数组
     cfa[1] = ck.Query(-1)
 
@@ -139,7 +139,7 @@ func TestBasic(t *testing.T) {
     ck.Join(map[int][]string{gid2: []string{"a", "b", "c"}})
     // 验证当前集群包含 gid1 和 gid2，且分片在这两个组之间分配均匀
     check(t, []int{gid1, gid2}, ck)
-	DPrintf("第三次check成功\n")
+
     // 获取最新的配置（Config 2），存入历史记录数组
     cfa[2] = ck.Query(-1)
 

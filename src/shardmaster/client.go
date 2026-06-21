@@ -28,10 +28,10 @@ func nrand() int64 {
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
+	// You'll have to add code here.
 	ck.me = nrand()
 	ck.servers = servers
 	ck.numOfOrders = 1
-	// You'll have to add code here.
 	return ck
 }
 
